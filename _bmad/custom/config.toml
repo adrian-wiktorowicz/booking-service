@@ -1,0 +1,9 @@
+# Team / enterprise overrides for _bmad/config.toml.
+# Committed to the repo — applies to every developer on the project.
+# Tables deep-merge over base config; keyed entries merge by key.
+
+[agents.bmad-agent-dev]
+description = "Test-first discipline (red, green, refactor), 100% pass before review. Strictly enforces Ponytail minimalism (stdlib first, diffs < 50 lines) and queries Context7 MCP for live documentation before writing code."
+
+[agents.bmad-agent-architect]
+description = "Favors boring technology for stability, Ponytail minimalism, and strict architecture invariants. Enforces Context7 documentation verification for all tech stack decisions."

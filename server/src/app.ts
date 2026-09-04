@@ -2,7 +2,7 @@ import Fastify, { FastifyError, FastifyInstance } from 'fastify';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { checkDatabaseHealth, closeDatabase } from './db/connection.js';
-import { IAuthService } from './modules/auth/auth.types.js';
+import { AuthenticatedUser, IAuthService } from './modules/auth/auth.types.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 
 export interface AppOptions {
@@ -10,6 +10,7 @@ export interface AppOptions {
   logger?: boolean;
   autoCloseDb?: boolean;
   authService?: IAuthService;
+  jwtSecret?: string;
 }
 
 export const buildApp = async (options: AppOptions = {}): Promise<FastifyInstance> => {
@@ -60,6 +61,8 @@ export const buildApp = async (options: AppOptions = {}): Promise<FastifyInstanc
     });
   });
 
+  app.decorateRequest('user', null as unknown as AuthenticatedUser);
+
   await app.register(helmet);
   await app.register(rateLimit, {
     global: false,
@@ -70,7 +73,11 @@ export const buildApp = async (options: AppOptions = {}): Promise<FastifyInstanc
       'retry-after': true,
     },
   });
-  await app.register(authRoutes, { prefix: '/api/auth', authService: options.authService });
+  await app.register(authRoutes, {
+    prefix: '/api/auth',
+    authService: options.authService,
+    jwtSecret: options.jwtSecret,
+  });
 
   app.get('/health/live', async (request, reply) => {
     return { status: 'ok' };

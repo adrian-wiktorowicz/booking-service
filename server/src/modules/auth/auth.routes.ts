@@ -8,13 +8,21 @@ import {
   InvalidCredentialsError,
 } from './auth.types.js';
 import { AuthService } from './auth.service.js';
+import { createAuthGuard } from './auth.guard.js';
 
 export interface AuthRouteOptions {
   authService?: IAuthService;
+  jwtSecret?: string;
 }
 
 export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (fastify, opts) => {
   const authService = opts.authService ?? new AuthService();
+  const jwtSecret =
+    opts.jwtSecret ??
+    (authService as any).jwtSecret ??
+    process.env.JWT_SECRET ??
+    'default-jwt-secret-for-development-must-be-32-chars';
+  const authenticate = createAuthGuard(authService, jwtSecret);
 
   fastify.post<{ Body: RegisterInput }>(
     '/register',
@@ -97,6 +105,30 @@ export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (fastify, 
         }
         throw err;
       }
+    }
+  );
+
+  fastify.get(
+    '/me',
+    {
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      return reply.status(200).send({
+        userId: request.user.userId,
+        email: request.user.email,
+      });
+    }
+  );
+
+  fastify.delete(
+    '/account',
+    {
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      const result = await authService.deleteAccount(request.user.userId);
+      return reply.status(200).send(result);
     }
   );
 };

@@ -20,6 +20,16 @@ class InMemoryUserRepository implements IUserRepository {
     return this.users.find((u) => u.email.toLowerCase() === email.toLowerCase()) ?? null;
   }
 
+  async findById(id: string): Promise<UserRecord | null> {
+    return this.users.find((u) => u.id === id) ?? null;
+  }
+
+  async deleteById(id: string): Promise<boolean> {
+    const initialLen = this.users.length;
+    this.users = this.users.filter((u) => u.id !== id);
+    return this.users.length < initialLen;
+  }
+
   async create(data: { email: string; passwordHash: string }): Promise<UserRecord> {
     const record: UserRecord = {
       id: crypto.randomUUID(),
@@ -170,6 +180,31 @@ describe('AuthService Unit Tests', () => {
         password: 'Password123',
       })
     ).rejects.toThrow(InvalidCredentialsError);
+  });
+
+  it('retrieves user record by id via getUserById', async () => {
+    const registered = await authService.register({
+      email: 'profile@example.com',
+      password: 'SecurePassword123',
+    });
+
+    const user = await (authService as any).getUserById(registered.userId);
+    expect(user).not.toBeNull();
+    expect(user?.id).toBe(registered.userId);
+    expect(user?.email).toBe('profile@example.com');
+  });
+
+  it('deletes user account atomically via deleteAccount', async () => {
+    const registered = await authService.register({
+      email: 'delete-me@example.com',
+      password: 'SecurePassword123',
+    });
+
+    const deleteRes = await (authService as any).deleteAccount(registered.userId);
+    expect(deleteRes).toEqual({ status: 'deleted' });
+
+    const postDeleteUser = await (authService as any).getUserById(registered.userId);
+    expect(postDeleteUser).toBeNull();
   });
 });
 
@@ -394,6 +429,12 @@ describe('POST /api/auth/register Integration Tests', () => {
       async findByEmail() {
         return null; // Passes initial check
       },
+      async findById() {
+        return null;
+      },
+      async deleteById() {
+        return false;
+      },
       async create() {
         const error: any = new Error('duplicate key value violates unique constraint');
         error.code = '23505';
@@ -452,6 +493,12 @@ describe('POST /api/auth/register Integration Tests', () => {
   it('formats unhandled server errors into uniform 500 error envelope', async () => {
     const errorRepo: IUserRepository = {
       async findByEmail() {
+        throw new Error('Database connection lost');
+      },
+      async findById() {
+        throw new Error('Database connection lost');
+      },
+      async deleteById() {
         throw new Error('Database connection lost');
       },
       async create() {
@@ -741,4 +788,224 @@ describe('HibpPasswordChecker Unit Tests', () => {
     }
   });
 });
+
+describe('Story 1.4: Tenant Isolation Guard & Account Cascade Deletion', () => {
+  const jwtSecret = 'test-jwt-secret-at-least-32-chars-long';
+  let userRepo: InMemoryUserRepository;
+  let authService: AuthService;
+
+  beforeEach(() => {
+    userRepo = new InMemoryUserRepository();
+    authService = new AuthService(userRepo, 12, 'test-pepper-secret', safePasswordChecker, jwtSecret);
+  });
+
+  it('AC1: returns 200 with userId and email on GET /api/auth/me with valid Bearer token', async () => {
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    const reg = await authService.register({
+      email: 'tenant@example.com',
+      password: 'SecurePassword123',
+    });
+    const loginRes = await authService.login({
+      email: 'tenant@example.com',
+      password: 'SecurePassword123',
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/auth/me',
+      headers: {
+        authorization: `Bearer ${loginRes.token}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      userId: reg.userId,
+      email: 'tenant@example.com',
+    });
+    await app.close();
+  });
+
+  it('AC2: returns 401 UNAUTHORIZED when Authorization header is missing on GET /api/auth/me', async () => {
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/auth/me',
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required',
+      },
+    });
+    await app.close();
+  });
+
+  it('AC2: returns 401 UNAUTHORIZED when Authorization header is not a Bearer scheme', async () => {
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/auth/me',
+      headers: {
+        authorization: 'Basic invalid-token',
+      },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required',
+      },
+    });
+    await app.close();
+  });
+
+  it('AC2: returns 401 UNAUTHORIZED when token signature is tampered', async () => {
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    await authService.register({
+      email: 'tenant@example.com',
+      password: 'SecurePassword123',
+    });
+    const loginRes = await authService.login({
+      email: 'tenant@example.com',
+      password: 'SecurePassword123',
+    });
+
+    const tampered = loginRes.token.slice(0, -4) + 'abcd';
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/auth/me',
+      headers: {
+        authorization: `Bearer ${tampered}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required',
+      },
+    });
+    await app.close();
+  });
+
+  it('AC2: returns 401 UNAUTHORIZED when token is expired', async () => {
+    const { signJwt } = await import('../src/modules/auth/jwt.js');
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    const reg = await authService.register({
+      email: 'tenant@example.com',
+      password: 'SecurePassword123',
+    });
+
+    const expiredToken = signJwt({ userId: reg.userId }, jwtSecret, -60);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/auth/me',
+      headers: {
+        authorization: `Bearer ${expiredToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required',
+      },
+    });
+    await app.close();
+  });
+
+  it('AC2: returns 401 UNAUTHORIZED when token has valid signature but user does not exist', async () => {
+    const { signJwt } = await import('../src/modules/auth/jwt.js');
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    const nonExistentUserId = crypto.randomUUID();
+    const token = signJwt({ userId: nonExistentUserId }, jwtSecret, 3600);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/auth/me',
+      headers: {
+        authorization: `Bearer ${token}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required',
+      },
+    });
+    await app.close();
+  });
+
+  it('AC3: deletes account atomically via DELETE /api/auth/account and invalidates future requests', async () => {
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    const reg = await authService.register({
+      email: 'to-delete@example.com',
+      password: 'SecurePassword123',
+    });
+    const loginRes = await authService.login({
+      email: 'to-delete@example.com',
+      password: 'SecurePassword123',
+    });
+
+    // Valid authenticated account deletion
+    const deleteResponse = await app.inject({
+      method: 'DELETE',
+      url: '/api/auth/account',
+      headers: {
+        authorization: `Bearer ${loginRes.token}`,
+      },
+    });
+
+    expect(deleteResponse.statusCode).toBe(200);
+    expect(deleteResponse.json()).toEqual({ status: 'deleted' });
+
+    // Verify user was removed from persistence
+    const userInDb = await userRepo.findById(reg.userId);
+    expect(userInDb).toBeNull();
+
+    // Subsequent access with the token returns 401 UNAUTHORIZED
+    const postDeleteResponse = await app.inject({
+      method: 'GET',
+      url: '/api/auth/me',
+      headers: {
+        authorization: `Bearer ${loginRes.token}`,
+      },
+    });
+
+    expect(postDeleteResponse.statusCode).toBe(401);
+    expect(postDeleteResponse.json()).toEqual({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required',
+      },
+    });
+    await app.close();
+  });
+
+  it('AC3: returns 401 UNAUTHORIZED when calling DELETE /api/auth/account unauthenticated', async () => {
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    const response = await app.inject({
+      method: 'DELETE',
+      url: '/api/auth/account',
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required',
+      },
+    });
+    await app.close();
+  });
+});
+
 

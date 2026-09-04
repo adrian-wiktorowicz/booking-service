@@ -15,9 +15,16 @@ export interface UserRecord {
   createdAt: Date;
 }
 
+export interface AuthenticatedUser {
+  userId: string;
+  email: string;
+}
+
 export interface IUserRepository {
   findByEmail(email: string): Promise<UserRecord | null>;
+  findById(id: string): Promise<UserRecord | null>;
   create(data: { email: string; passwordHash: string }): Promise<UserRecord>;
+  deleteById(id: string): Promise<boolean>;
 }
 
 export interface LoginInput {
@@ -33,6 +40,18 @@ export interface LoginResponse {
 export interface IAuthService {
   register(input: RegisterInput): Promise<UserResponse>;
   login(input: LoginInput): Promise<LoginResponse>;
+  getUserById(userId: string): Promise<UserRecord | null>;
+  deleteAccount(userId: string): Promise<{ status: string }>;
+}
+
+export class UnauthorizedError extends Error {
+  readonly code = 'UNAUTHORIZED';
+  readonly statusCode = 401;
+
+  constructor(message = 'Authentication required') {
+    super(message);
+    this.name = 'UnauthorizedError';
+  }
 }
 
 export class InvalidCredentialsError extends Error {

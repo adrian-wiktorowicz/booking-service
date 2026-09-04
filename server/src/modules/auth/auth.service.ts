@@ -65,6 +65,16 @@ const defaultUserRepository: IUserRepository = {
     const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
     return user ?? null;
   },
+  async findById(id: string): Promise<UserRecord | null> {
+    const [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+    return user ?? null;
+  },
+  async deleteById(id: string): Promise<boolean> {
+    return await db.transaction(async (tx) => {
+      const deleted = await tx.delete(users).where(eq(users.id, id)).returning({ id: users.id });
+      return deleted.length > 0;
+    });
+  },
   async create(data: { email: string; passwordHash: string }): Promise<UserRecord> {
     try {
       const [user] = await db
@@ -152,6 +162,15 @@ export class AuthService implements IAuthService {
       token,
       expiresIn: 86400,
     };
+  }
+
+  async getUserById(userId: string): Promise<UserRecord | null> {
+    return this.userRepo.findById(userId);
+  }
+
+  async deleteAccount(userId: string): Promise<{ status: string }> {
+    await this.userRepo.deleteById(userId);
+    return { status: 'deleted' };
   }
 }
 

@@ -15,13 +15,8 @@ export const db = drizzle({ client: pool });
 
 export const checkDatabaseHealth = async (dbPool: Pool = pool): Promise<boolean> => {
   try {
-    const client = await dbPool.connect();
-    try {
-      await client.query('SELECT 1');
-      return true;
-    } finally {
-      client.release();
-    }
+    await dbPool.query('SELECT 1');
+    return true;
   } catch {
     return false;
   }

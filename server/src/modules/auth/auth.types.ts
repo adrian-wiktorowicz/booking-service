@@ -20,8 +20,29 @@ export interface IUserRepository {
   create(data: { email: string; passwordHash: string }): Promise<UserRecord>;
 }
 
+export interface LoginInput {
+  email: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  token: string;
+  expiresIn: number;
+}
+
 export interface IAuthService {
   register(input: RegisterInput): Promise<UserResponse>;
+  login(input: LoginInput): Promise<LoginResponse>;
+}
+
+export class InvalidCredentialsError extends Error {
+  readonly code = 'INVALID_CREDENTIALS';
+  readonly statusCode = 401;
+
+  constructor(message = 'Invalid email or password') {
+    super(message);
+    this.name = 'InvalidCredentialsError';
+  }
 }
 
 export class EmailExistsError extends Error {

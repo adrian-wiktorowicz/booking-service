@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import bcrypt from 'bcryptjs';
 import { buildApp } from '../src/app.js';
 import { AuthService, pepperPassword, HibpPasswordChecker } from '../src/modules/auth/auth.service.js';
@@ -8,7 +8,9 @@ import {
   EmailExistsError,
   IPasswordChecker,
   PasswordCompromisedError,
+  InvalidCredentialsError,
 } from '../src/modules/auth/auth.types.js';
+import { verifyJwt } from '../src/modules/auth/jwt.js';
 
 
 class InMemoryUserRepository implements IUserRepository {
@@ -40,7 +42,7 @@ describe('AuthService Unit Tests', () => {
 
   beforeEach(() => {
     userRepo = new InMemoryUserRepository();
-    authService = new AuthService(userRepo, 12, 'test-pepper-secret', safePasswordChecker);
+    authService = new AuthService(userRepo, 12, 'test-pepper-secret', safePasswordChecker, 'test-jwt-secret-at-least-32-chars-long');
   });
 
   it('registers a user with bcrypt work factor >= 12 and returns user response without password hash', async () => {
@@ -95,6 +97,79 @@ describe('AuthService Unit Tests', () => {
     ).rejects.toThrow(PasswordCompromisedError);
 
     expect(userRepo.users).toHaveLength(0);
+  });
+
+  it('authenticates valid credentials and returns JWT token and expiresIn 86400', async () => {
+    const registered = await authService.register({
+      email: 'login@example.com',
+      password: 'SecurePassword123',
+    });
+
+    const res = await authService.login({
+      email: 'login@example.com',
+      password: 'SecurePassword123',
+    });
+
+    expect(res.token).toBeDefined();
+    expect(res.expiresIn).toBe(86400);
+
+    const payload = verifyJwt(res.token, 'test-jwt-secret-at-least-32-chars-long');
+    expect(payload.userId).toBe(registered.userId);
+  });
+
+  it('throws InvalidCredentialsError when password is incorrect', async () => {
+    await authService.register({
+      email: 'login@example.com',
+      password: 'SecurePassword123',
+    });
+
+    await expect(
+      authService.login({
+        email: 'login@example.com',
+        password: 'WrongPassword456',
+      })
+    ).rejects.toThrow(InvalidCredentialsError);
+  });
+
+  it('throws InvalidCredentialsError when email does not exist, executing dummy bcrypt compare', async () => {
+    const compareSpy = vi.spyOn(bcrypt, 'compare');
+    try {
+      await expect(
+        authService.login({
+          email: 'nonexistent@example.com',
+          password: 'Password123',
+        })
+      ).rejects.toThrow(InvalidCredentialsError);
+
+      expect(compareSpy).toHaveBeenCalled();
+    } finally {
+      compareSpy.mockRestore();
+    }
+  });
+
+  it('normalizes email casing and whitespace during login', async () => {
+    const registered = await authService.register({
+      email: 'user@example.com',
+      password: 'SecurePassword123',
+    });
+
+    const res = await authService.login({
+      email: '  User@Example.Com  ',
+      password: 'SecurePassword123',
+    });
+
+    expect(res.token).toBeDefined();
+    const payload = verifyJwt(res.token, 'test-jwt-secret-at-least-32-chars-long');
+    expect(payload.userId).toBe(registered.userId);
+  });
+
+  it('throws InvalidCredentialsError when email contains null byte', async () => {
+    await expect(
+      authService.login({
+        email: 'user\0@example.com',
+        password: 'Password123',
+      })
+    ).rejects.toThrow(InvalidCredentialsError);
   });
 });
 
@@ -402,6 +477,211 @@ describe('POST /api/auth/register Integration Tests', () => {
         message: 'Internal server error',
       },
     });
+    await app.close();
+  });
+});
+
+describe('POST /api/auth/login Integration Tests', () => {
+  let userRepo: InMemoryUserRepository;
+  let authService: AuthService;
+
+  beforeEach(() => {
+    userRepo = new InMemoryUserRepository();
+    authService = new AuthService(userRepo, 12, 'test-pepper-secret', safePasswordChecker, 'test-jwt-secret-at-least-32-chars-long');
+  });
+
+  it('returns 200 with JWT token, expiresIn, and Cache-Control headers on valid login', async () => {
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    const registered = await authService.register({
+      email: 'user@example.com',
+      password: 'SecurePassword123',
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: {
+        email: 'user@example.com',
+        password: 'SecurePassword123',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.token).toBeDefined();
+    expect(body.expiresIn).toBe(86400);
+    expect(response.headers['cache-control']).toBe('no-store, no-cache, must-revalidate');
+
+    const payload = verifyJwt(body.token, 'test-jwt-secret-at-least-32-chars-long');
+    expect(payload.userId).toBe(registered.userId);
+    await app.close();
+  });
+
+  it('returns 401 uniform error envelope on incorrect password', async () => {
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    await authService.register({
+      email: 'user@example.com',
+      password: 'SecurePassword123',
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: {
+        email: 'user@example.com',
+        password: 'WrongPassword456',
+      },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({
+      error: {
+        code: 'INVALID_CREDENTIALS',
+        message: 'Invalid email or password',
+      },
+    });
+    await app.close();
+  });
+
+  it('returns 401 uniform error envelope on nonexistent email', async () => {
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: {
+        email: 'nonexistent@example.com',
+        password: 'SecurePassword123',
+      },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({
+      error: {
+        code: 'INVALID_CREDENTIALS',
+        message: 'Invalid email or password',
+      },
+    });
+    await app.close();
+  });
+
+  it('returns 422 uniform error envelope on malformed email', async () => {
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: {
+        email: 'not-an-email',
+        password: 'SecurePassword123',
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toEqual({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Validation failed',
+      },
+    });
+    await app.close();
+  });
+
+  it('returns 422 uniform error envelope on missing email or password', async () => {
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    const res1 = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { email: 'user@example.com' },
+    });
+    expect(res1.statusCode).toBe(422);
+
+    const res2 = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { password: 'SecurePassword123' },
+    });
+    expect(res2.statusCode).toBe(422);
+    await app.close();
+  });
+
+  it('returns 422 uniform error envelope on password exceeding 72 characters', async () => {
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: {
+        email: 'user@example.com',
+        password: 'P'.repeat(73),
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toEqual({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Validation failed',
+      },
+    });
+    await app.close();
+  });
+
+  it('returns 422 uniform error envelope on unexpected properties', async () => {
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: {
+        email: 'user@example.com',
+        password: 'SecurePassword123',
+        extra: 'field',
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toEqual({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Validation failed',
+      },
+    });
+    await app.close();
+  });
+
+  it('enforces rate limiting of 5 requests per minute per IP returning 429 and Retry-After header', async () => {
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService });
+    await authService.register({
+      email: 'user@example.com',
+      password: 'SecurePassword123',
+    });
+
+    for (let i = 0; i < 5; i++) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        payload: {
+          email: 'user@example.com',
+          password: 'WrongPassword',
+        },
+      });
+      expect(res.statusCode).toBe(401);
+    }
+
+    const limitedRes = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: {
+        email: 'user@example.com',
+        password: 'SecurePassword123',
+      },
+    });
+
+    expect(limitedRes.statusCode).toBe(429);
+    expect(limitedRes.json()).toEqual({
+      error: {
+        code: 'RATE_LIMITED',
+        message: 'Too many login attempts. Please retry later.',
+      },
+    });
+    expect(limitedRes.headers['retry-after']).toBeDefined();
     await app.close();
   });
 });

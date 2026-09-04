@@ -1,5 +1,6 @@
 import Fastify, { FastifyError, FastifyInstance } from 'fastify';
 import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
 import { checkDatabaseHealth, closeDatabase } from './db/connection.js';
 import { IAuthService } from './modules/auth/auth.types.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
@@ -14,6 +15,7 @@ export interface AppOptions {
 export const buildApp = async (options: AppOptions = {}): Promise<FastifyInstance> => {
   const app = Fastify({
     logger: options.logger ?? true,
+    trustProxy: process.env.TRUST_PROXY !== 'false',
     ajv: {
       customOptions: {
         removeAdditional: false,
@@ -27,6 +29,15 @@ export const buildApp = async (options: AppOptions = {}): Promise<FastifyInstanc
         error: {
           code: 'VALIDATION_ERROR',
           message: 'Validation failed',
+        },
+      });
+    }
+
+    if (error.statusCode === 429) {
+      return reply.status(429).send({
+        error: {
+          code: 'RATE_LIMITED',
+          message: 'Too many login attempts. Please retry later.',
         },
       });
     }
@@ -50,6 +61,15 @@ export const buildApp = async (options: AppOptions = {}): Promise<FastifyInstanc
   });
 
   await app.register(helmet);
+  await app.register(rateLimit, {
+    global: false,
+    addHeaders: {
+      'x-ratelimit-limit': true,
+      'x-ratelimit-remaining': true,
+      'x-ratelimit-reset': true,
+      'retry-after': true,
+    },
+  });
   await app.register(authRoutes, { prefix: '/api/auth', authService: options.authService });
 
   app.get('/health/live', async (request, reply) => {

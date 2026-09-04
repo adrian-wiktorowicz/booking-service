@@ -2,8 +2,10 @@ import { FastifyPluginAsync } from 'fastify';
 import {
   IAuthService,
   RegisterInput,
+  LoginInput,
   EmailExistsError,
   PasswordCompromisedError,
+  InvalidCredentialsError,
 } from './auth.types.js';
 import { AuthService } from './auth.service.js';
 
@@ -44,6 +46,49 @@ export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (fastify, 
         }
         if (err instanceof PasswordCompromisedError) {
           return reply.status(422).send({
+            error: {
+              code: err.code,
+              message: err.message,
+            },
+          });
+        }
+        throw err;
+      }
+    }
+  );
+
+  fastify.post<{ Body: LoginInput }>(
+    '/login',
+    {
+      config: {
+        rateLimit: {
+          max: 5,
+          timeWindow: '1 minute',
+        },
+      },
+      schema: {
+        body: {
+          type: 'object',
+          required: ['email', 'password'],
+          additionalProperties: false,
+          properties: {
+            email: { type: 'string', format: 'email', maxLength: 254 },
+            password: { type: 'string', minLength: 8, maxLength: 72 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const result = await authService.login(request.body);
+        return reply
+          .header('Cache-Control', 'no-store, no-cache, must-revalidate')
+          .header('Pragma', 'no-cache')
+          .status(200)
+          .send(result);
+      } catch (err) {
+        if (err instanceof InvalidCredentialsError) {
+          return reply.status(401).send({
             error: {
               code: err.code,
               message: err.message,

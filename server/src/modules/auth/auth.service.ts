@@ -7,12 +7,16 @@ import {
   IAuthService,
   IUserRepository,
   RegisterInput,
+  LoginInput,
+  LoginResponse,
   UserRecord,
   UserResponse,
   EmailExistsError,
+  InvalidCredentialsError,
   IPasswordChecker,
   PasswordCompromisedError,
 } from './auth.types.js';
+import { signJwt } from './jwt.js';
 
 export function pepperPassword(password: string, pepperSecret?: string): string {
   if (!pepperSecret) {
@@ -81,11 +85,14 @@ const defaultUserRepository: IUserRepository = {
 };
 
 export class AuthService implements IAuthService {
+  private static readonly DUMMY_HASH: string = bcrypt.hashSync('__anti_enumeration_sentinel__', 12);
+
   constructor(
     private readonly userRepo: IUserRepository = defaultUserRepository,
     private readonly saltRounds: number = 12,
     private readonly pepperSecret: string = process.env.AUTH_PEPPER_SECRET || '',
-    private readonly passwordChecker: IPasswordChecker = defaultPasswordChecker
+    private readonly passwordChecker: IPasswordChecker = defaultPasswordChecker,
+    private readonly jwtSecret: string = process.env.JWT_SECRET || 'default-jwt-secret-for-development-must-be-32-chars'
   ) {}
 
   async register(input: RegisterInput): Promise<UserResponse> {
@@ -117,6 +124,34 @@ export class AuthService implements IAuthService {
       }
       throw err;
     }
+  }
+
+  async login(input: LoginInput): Promise<LoginResponse> {
+    const normalizedEmail = input.email.trim().toLowerCase();
+    const hasNullByte = normalizedEmail.includes('\0');
+
+    const preparedPassword = pepperPassword(input.password, this.pepperSecret);
+
+    const user = hasNullByte ? null : await this.userRepo.findByEmail(normalizedEmail);
+    const targetHash = user ? user.passwordHash : AuthService.DUMMY_HASH;
+
+    const isMatch = await bcrypt.compare(preparedPassword, targetHash);
+
+    const userFound = user !== null && !hasNullByte;
+    const authenticated = crypto.timingSafeEqual(
+      Buffer.from(userFound && isMatch ? '1' : '0'),
+      Buffer.from('1')
+    );
+
+    if (!authenticated) {
+      throw new InvalidCredentialsError();
+    }
+
+    const token = signJwt({ userId: user!.id }, this.jwtSecret, 86400);
+    return {
+      token,
+      expiresIn: 86400,
+    };
   }
 }
 

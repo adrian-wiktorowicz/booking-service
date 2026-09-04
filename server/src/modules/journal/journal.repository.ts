@@ -1,4 +1,3 @@
-import { eq, and } from 'drizzle-orm';
 import { db } from '../../db/connection.js';
 import { journalEntries } from '../../db/schema.js';
 import { IJournalRepository, JournalEntryRecord, Mood } from './journal.types.js';
@@ -33,20 +32,5 @@ export class DrizzleJournalRepository implements IJournalRepository {
       .returning();
 
     return entry;
-  }
-
-  async findByUserAndDate(userId: string, entryDate: string): Promise<JournalEntryRecord | null> {
-    const [entry] = await this.database
-      .select()
-      .from(journalEntries)
-      .where(
-        and(
-          eq(journalEntries.userId, userId),
-          eq(journalEntries.entryDate, entryDate)
-        )
-      )
-      .limit(1);
-
-    return entry ?? null;
   }
 }

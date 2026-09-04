@@ -1,11 +1,5 @@
 import { FastifyPluginAsync } from 'fastify';
-import {
-  IJournalService,
-  UpsertJournalEntryInput,
-  InvalidDateError,
-  InvalidMoodError,
-  PayloadValidationError,
-} from './journal.types.js';
+import { IJournalService, UpsertJournalEntryInput } from './journal.types.js';
 import { JournalService } from './journal.service.js';
 import { DrizzleJournalRepository } from './journal.repository.js';
 import { IAuthService } from '../auth/auth.types.js';
@@ -29,33 +23,14 @@ export const journalRoutes: FastifyPluginAsync<JournalRouteOptions> = async (fas
 
   fastify.put<{ Params: { date: string }; Body: UpsertJournalEntryInput }>(
     '/entries/:date',
-    {
-      preHandler: [authenticate],
-    },
+    { preHandler: [authenticate] },
     async (request, reply) => {
-      try {
-        const { date } = request.params;
-        const result = await journalService.saveEntry(
-          request.user.userId,
-          date,
-          request.body ?? ({} as any)
-        );
-        return reply.status(200).send(result);
-      } catch (err) {
-        if (
-          err instanceof InvalidDateError ||
-          err instanceof InvalidMoodError ||
-          err instanceof PayloadValidationError
-        ) {
-          return reply.status(err.statusCode).send({
-            error: {
-              code: err.code,
-              message: err.message,
-            },
-          });
-        }
-        throw err;
-      }
+      const result = await journalService.saveEntry(
+        request.user.userId,
+        request.params.date,
+        request.body ?? ({} as any)
+      );
+      return reply.send(result);
     }
   );
 };

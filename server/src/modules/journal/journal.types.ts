@@ -38,15 +38,6 @@ export class InvalidDateError extends Error {
   }
 }
 
-export class InvalidMoodError extends Error {
-  readonly code = 'VALIDATION_ERROR';
-  readonly statusCode = 422;
-  constructor(message: string = 'Mood must be one of: bad, neutral, good, very_good') {
-    super(message);
-    this.name = 'InvalidMoodError';
-  }
-}
-
 export class PayloadValidationError extends Error {
   readonly code = 'VALIDATION_ERROR';
   readonly statusCode = 422;
@@ -56,13 +47,19 @@ export class PayloadValidationError extends Error {
   }
 }
 
+export class InvalidMoodError extends PayloadValidationError {
+  constructor() {
+    super('Mood must be one of: bad, neutral, good, very_good');
+    this.name = 'InvalidMoodError';
+  }
+}
+
 export interface IJournalRepository {
   upsert(
     userId: string,
     entryDate: string,
     data: { notes: string; mood: Mood; tags: string[] }
   ): Promise<JournalEntryRecord>;
-  findByUserAndDate(userId: string, entryDate: string): Promise<JournalEntryRecord | null>;
 }
 
 export interface IJournalService {

@@ -51,11 +51,6 @@ export class InMemoryJournalRepository implements IJournalRepository {
     this.entries.push(newEntry);
     return newEntry;
   }
-
-  async findByUserAndDate(userId: string, entryDate: string): Promise<JournalEntryRecord | null> {
-    const entry = this.entries.find((e) => e.userId === userId && e.entryDate === entryDate);
-    return entry ?? null;
-  }
 }
 
 const mockAuthService: IAuthService = {

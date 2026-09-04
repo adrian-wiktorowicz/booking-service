@@ -1,8 +1,15 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import bcrypt from 'bcryptjs';
 import { buildApp } from '../src/app.js';
-import { AuthService } from '../src/modules/auth/auth.service.js';
-import { IUserRepository, UserRecord, EmailExistsError } from '../src/modules/auth/auth.types.js';
+import { AuthService, pepperPassword, HibpPasswordChecker } from '../src/modules/auth/auth.service.js';
+import {
+  IUserRepository,
+  UserRecord,
+  EmailExistsError,
+  IPasswordChecker,
+  PasswordCompromisedError,
+} from '../src/modules/auth/auth.types.js';
+
 
 class InMemoryUserRepository implements IUserRepository {
   users: UserRecord[] = [];
@@ -23,13 +30,17 @@ class InMemoryUserRepository implements IUserRepository {
   }
 }
 
+const safePasswordChecker: IPasswordChecker = {
+  isCompromised: async () => false,
+};
+
 describe('AuthService Unit Tests', () => {
   let userRepo: InMemoryUserRepository;
   let authService: AuthService;
 
   beforeEach(() => {
     userRepo = new InMemoryUserRepository();
-    authService = new AuthService(userRepo);
+    authService = new AuthService(userRepo, 12, 'test-pepper-secret', safePasswordChecker);
   });
 
   it('registers a user with bcrypt work factor >= 12 and returns user response without password hash', async () => {
@@ -47,7 +58,13 @@ describe('AuthService Unit Tests', () => {
     expect(stored).not.toBeNull();
     expect(stored?.passwordHash).not.toBe('SecurePassword123');
     expect(bcrypt.getRounds(stored!.passwordHash)).toBeGreaterThanOrEqual(12);
-    expect(await bcrypt.compare('SecurePassword123', stored!.passwordHash)).toBe(true);
+
+    // Raw password without pepper fails to verify (DB dump protection)
+    expect(await bcrypt.compare('SecurePassword123', stored!.passwordHash)).toBe(false);
+    // Correct pepper verification succeeds
+    expect(await bcrypt.compare(pepperPassword('SecurePassword123', 'test-pepper-secret'), stored!.passwordHash)).toBe(true);
+    // Incorrect pepper fails to verify
+    expect(await bcrypt.compare(pepperPassword('SecurePassword123', 'wrong-pepper'), stored!.passwordHash)).toBe(false);
   });
 
   it('throws EmailExistsError when registering an existing email', async () => {
@@ -63,7 +80,24 @@ describe('AuthService Unit Tests', () => {
       })
     ).rejects.toThrow(EmailExistsError);
   });
+
+  it('throws PasswordCompromisedError when password is found in data breaches', async () => {
+    const compromisedChecker: IPasswordChecker = {
+      isCompromised: async () => true,
+    };
+    const compromisedAuthService = new AuthService(userRepo, 12, 'test-pepper-secret', compromisedChecker);
+
+    await expect(
+      compromisedAuthService.register({
+        email: 'user@example.com',
+        password: 'BreachedPassword123',
+      })
+    ).rejects.toThrow(PasswordCompromisedError);
+
+    expect(userRepo.users).toHaveLength(0);
+  });
 });
+
 
 describe('POST /api/auth/register Integration Tests', () => {
   let userRepo: InMemoryUserRepository;
@@ -71,8 +105,9 @@ describe('POST /api/auth/register Integration Tests', () => {
 
   beforeEach(() => {
     userRepo = new InMemoryUserRepository();
-    authService = new AuthService(userRepo);
+    authService = new AuthService(userRepo, 12, 'test-pepper-secret', safePasswordChecker);
   });
+
 
   it('returns 201 with userId and email on valid registration', async () => {
     const app = await buildApp({ logger: false, autoCloseDb: false, authService });
@@ -290,7 +325,7 @@ describe('POST /api/auth/register Integration Tests', () => {
         throw error;
       },
     };
-    const racingAuthService = new AuthService(racingRepo);
+    const racingAuthService = new AuthService(racingRepo, 12, 'test-pepper-secret', safePasswordChecker);
     const app = await buildApp({ logger: false, autoCloseDb: false, authService: racingAuthService });
 
     const response = await app.inject({
@@ -312,6 +347,33 @@ describe('POST /api/auth/register Integration Tests', () => {
     await app.close();
   });
 
+  it('returns 422 uniform error envelope when password is compromised in data breaches', async () => {
+    const compromisedChecker: IPasswordChecker = {
+      isCompromised: async () => true,
+    };
+    const testAuthService = new AuthService(userRepo, 12, 'test-pepper-secret', compromisedChecker);
+    const app = await buildApp({ logger: false, autoCloseDb: false, authService: testAuthService });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: {
+        email: 'user@example.com',
+        password: 'PwnedPassword123',
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toEqual({
+      error: {
+        code: 'PASSWORD_COMPROMISED',
+        message: 'Password has been compromised in a data breach. Please choose a different password.',
+      },
+    });
+    expect(userRepo.users).toHaveLength(0);
+    await app.close();
+  });
+
   it('formats unhandled server errors into uniform 500 error envelope', async () => {
     const errorRepo: IUserRepository = {
       async findByEmail() {
@@ -321,7 +383,7 @@ describe('POST /api/auth/register Integration Tests', () => {
         throw new Error('Database connection lost');
       },
     };
-    const errorAuthService = new AuthService(errorRepo);
+    const errorAuthService = new AuthService(errorRepo, 12, 'test-pepper-secret', safePasswordChecker);
     const app = await buildApp({ logger: false, autoCloseDb: false, authService: errorAuthService });
 
     const response = await app.inject({
@@ -343,3 +405,60 @@ describe('POST /api/auth/register Integration Tests', () => {
     await app.close();
   });
 });
+
+describe('HibpPasswordChecker Unit Tests', () => {
+  it('identifies compromised passwords via k-anonymity API response', async () => {
+    const checker = new HibpPasswordChecker(1000);
+    const originalFetch = globalThis.fetch;
+    try {
+      // password: 'password123' -> SHA-1: CBFDAC6008F9CAB4083784CBD1874F76618D2A97
+      // prefix: 'CBFDA', suffix: 'C6008F9CAB4083784CBD1874F76618D2A97'
+      globalThis.fetch = (async (url: any) => {
+        expect(String(url)).toContain('/range/CBFDA');
+        return {
+          ok: true,
+          text: async () => '0018A45C4D17F:1\r\nC6008F9CAB4083784CBD1874F76618D2A97:184562\r\n00D64411:3\r\n',
+        } as any;
+      }) as any;
+
+      const isCompromised = await checker.isCompromised('password123');
+      expect(isCompromised).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('identifies safe passwords not present in HIBP response', async () => {
+    const checker = new HibpPasswordChecker(1000);
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () => {
+        return {
+          ok: true,
+          text: async () => '0018A45C4D17F:1\r\nFFFFFC6008F9CAB4083784CBD1874F76618D2A97:10\r\n',
+        } as any;
+      }) as any;
+
+      const isCompromised = await checker.isCompromised('UniqueSuperSecretPass#2026!');
+      expect(isCompromised).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('fails open (returns false) if HIBP API returns error status or throws network error', async () => {
+    const checker = new HibpPasswordChecker(1000);
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () => {
+        throw new Error('Network timeout');
+      }) as any;
+
+      const isCompromised = await checker.isCompromised('AnyPassword123');
+      expect(isCompromised).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+

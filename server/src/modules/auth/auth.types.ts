@@ -33,3 +33,18 @@ export class EmailExistsError extends Error {
     this.name = 'EmailExistsError';
   }
 }
+
+export interface IPasswordChecker {
+  isCompromised(password: string): Promise<boolean>;
+}
+
+export class PasswordCompromisedError extends Error {
+  readonly code = 'PASSWORD_COMPROMISED';
+  readonly statusCode = 422;
+
+  constructor(message = 'Password has been compromised in a data breach. Please choose a different password.') {
+    super(message);
+    this.name = 'PasswordCompromisedError';
+  }
+}
+

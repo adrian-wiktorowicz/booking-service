@@ -75,11 +75,15 @@ context: ['_bmad-output/planning-artifacts/architecture/architecture-booking-ser
 
 ## Spec Change Log
 
+- **2026-09-04**: Added **Pepper defense** (`AUTH_PEPPER_SECRET` via native `node:crypto` HMAC-SHA256) to protect password hashes against offline dictionary attacks even in case of full database dump. Added **Compromised Password Checking** (`HibpPasswordChecker` via HaveIBeenPwned k-anonymity API with 1500ms timeout and fail-open resilience) returning HTTP 422 `PASSWORD_COMPROMISED`.
+
 ## Design Notes
 
 - In `app.ts`, `setErrorHandler` transforms `error.validation` into `{ error: { code: 'VALIDATION_ERROR', message: 'Validation failed' } }` with HTTP 422 status.
 - `AuthService` accepts an injected database client or repository to support fast in-memory mocking during unit and integration test runs without requiring an active PostgreSQL instance.
-- Password hashing defaults to `12` rounds of salt using `bcryptjs.hash(password, 12)`.
+- Password hashing combines an external pepper (`AUTH_PEPPER_SECRET`) via native HMAC-SHA256 with `12` rounds of bcrypt salt (`bcryptjs.hash(pepperedPassword, 12)`).
+- HaveIBeenPwned k-anonymity checks SHA-1 hash prefixes (`/range/{prefix}`) before user creation; if compromised, throws `PasswordCompromisedError` (422), failing open on network/service outage to ensure business continuity.
+
 
 ## Verification
 

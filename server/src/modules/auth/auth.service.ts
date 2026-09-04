@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db/connection.js';
@@ -9,7 +10,51 @@ import {
   UserRecord,
   UserResponse,
   EmailExistsError,
+  IPasswordChecker,
+  PasswordCompromisedError,
 } from './auth.types.js';
+
+export function pepperPassword(password: string, pepperSecret?: string): string {
+  if (!pepperSecret) {
+    return password;
+  }
+  return crypto.createHmac('sha256', pepperSecret).update(password).digest('hex');
+}
+
+export class HibpPasswordChecker implements IPasswordChecker {
+  constructor(private readonly timeoutMs: number = 1500) {}
+
+  async isCompromised(password: string): Promise<boolean> {
+    try {
+      const sha1 = crypto.createHash('sha1').update(password).digest('hex').toUpperCase();
+      const prefix = sha1.slice(0, 5);
+      const suffix = sha1.slice(5);
+
+      const res = await fetch(`https://api.pwnedpasswords.com/range/${prefix}`, {
+        headers: { 'Add-Padding': 'true', 'User-Agent': 'booking-service-auth' },
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+
+      if (!res.ok) {
+        return false;
+      }
+
+      const body = await res.text();
+      const lines = body.split('\n');
+      for (const line of lines) {
+        const [hashSuffix] = line.trim().split(':');
+        if (hashSuffix === suffix) {
+          return true;
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+}
+
+const defaultPasswordChecker: IPasswordChecker = new HibpPasswordChecker();
 
 const defaultUserRepository: IUserRepository = {
   async findByEmail(email: string): Promise<UserRecord | null> {
@@ -38,7 +83,9 @@ const defaultUserRepository: IUserRepository = {
 export class AuthService implements IAuthService {
   constructor(
     private readonly userRepo: IUserRepository = defaultUserRepository,
-    private readonly saltRounds: number = 12
+    private readonly saltRounds: number = 12,
+    private readonly pepperSecret: string = process.env.AUTH_PEPPER_SECRET || '',
+    private readonly passwordChecker: IPasswordChecker = defaultPasswordChecker
   ) {}
 
   async register(input: RegisterInput): Promise<UserResponse> {
@@ -48,7 +95,12 @@ export class AuthService implements IAuthService {
       throw new EmailExistsError();
     }
 
-    const passwordHash = await bcrypt.hash(input.password, this.saltRounds);
+    if (await this.passwordChecker.isCompromised(input.password)) {
+      throw new PasswordCompromisedError();
+    }
+
+    const preparedPassword = pepperPassword(input.password, this.pepperSecret);
+    const passwordHash = await bcrypt.hash(preparedPassword, this.saltRounds);
     try {
       const user = await this.userRepo.create({
         email: normalizedEmail,
@@ -67,3 +119,4 @@ export class AuthService implements IAuthService {
     }
   }
 }
+

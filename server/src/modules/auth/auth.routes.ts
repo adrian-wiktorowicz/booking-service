@@ -1,5 +1,10 @@
 import { FastifyPluginAsync } from 'fastify';
-import { IAuthService, RegisterInput, EmailExistsError } from './auth.types.js';
+import {
+  IAuthService,
+  RegisterInput,
+  EmailExistsError,
+  PasswordCompromisedError,
+} from './auth.types.js';
 import { AuthService } from './auth.service.js';
 
 export interface AuthRouteOptions {
@@ -37,8 +42,17 @@ export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (fastify, 
             },
           });
         }
+        if (err instanceof PasswordCompromisedError) {
+          return reply.status(422).send({
+            error: {
+              code: err.code,
+              message: err.message,
+            },
+          });
+        }
         throw err;
       }
     }
   );
 };
+

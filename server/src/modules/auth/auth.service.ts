@@ -69,10 +69,9 @@ const defaultUserRepository: IUserRepository = {
     const [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
     return user ?? null;
   },
-  async deleteById(id: string): Promise<boolean> {
-    return await db.transaction(async (tx) => {
-      const deleted = await tx.delete(users).where(eq(users.id, id)).returning({ id: users.id });
-      return deleted.length > 0;
+  async deleteById(id: string): Promise<void> {
+    await db.transaction(async (tx) => {
+      await tx.delete(users).where(eq(users.id, id));
     });
   },
   async create(data: { email: string; passwordHash: string }): Promise<UserRecord> {
@@ -102,7 +101,7 @@ export class AuthService implements IAuthService {
     private readonly saltRounds: number = 12,
     private readonly pepperSecret: string = process.env.AUTH_PEPPER_SECRET || '',
     private readonly passwordChecker: IPasswordChecker = defaultPasswordChecker,
-    private readonly jwtSecret: string = process.env.JWT_SECRET || 'default-jwt-secret-for-development-must-be-32-chars'
+    readonly jwtSecret: string = process.env.JWT_SECRET || 'default-jwt-secret-for-development-must-be-32-chars'
   ) {}
 
   async register(input: RegisterInput): Promise<UserResponse> {

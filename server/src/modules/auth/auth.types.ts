@@ -24,7 +24,7 @@ export interface IUserRepository {
   findByEmail(email: string): Promise<UserRecord | null>;
   findById(id: string): Promise<UserRecord | null>;
   create(data: { email: string; passwordHash: string }): Promise<UserRecord>;
-  deleteById(id: string): Promise<boolean>;
+  deleteById(id: string): Promise<void>;
 }
 
 export interface LoginInput {

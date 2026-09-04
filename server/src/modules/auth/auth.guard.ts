@@ -1,4 +1,4 @@
-import { FastifyRequest, FastifyReply } from 'fastify';
+import { FastifyRequest } from 'fastify';
 import { IAuthService, UnauthorizedError, AuthenticatedUser } from './auth.types.js';
 import { verifyJwt } from './jwt.js';
 
@@ -9,13 +9,9 @@ declare module 'fastify' {
 }
 
 export function createAuthGuard(authService: IAuthService, jwtSecret: string) {
-  return async function authenticate(request: FastifyRequest, _reply: FastifyReply) {
+  return async function authenticate(request: FastifyRequest) {
     const authHeader = request.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw new UnauthorizedError();
-    }
-
-    const token = authHeader.slice(7).trim();
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
     if (!token) {
       throw new UnauthorizedError();
     }

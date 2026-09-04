@@ -24,10 +24,8 @@ class InMemoryUserRepository implements IUserRepository {
     return this.users.find((u) => u.id === id) ?? null;
   }
 
-  async deleteById(id: string): Promise<boolean> {
-    const initialLen = this.users.length;
+  async deleteById(id: string): Promise<void> {
     this.users = this.users.filter((u) => u.id !== id);
-    return this.users.length < initialLen;
   }
 
   async create(data: { email: string; passwordHash: string }): Promise<UserRecord> {
@@ -432,9 +430,7 @@ describe('POST /api/auth/register Integration Tests', () => {
       async findById() {
         return null;
       },
-      async deleteById() {
-        return false;
-      },
+      async deleteById() {},
       async create() {
         const error: any = new Error('duplicate key value violates unique constraint');
         error.code = '23505';

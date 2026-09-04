@@ -19,8 +19,7 @@ export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (fastify, 
   const authService = opts.authService ?? new AuthService();
   const jwtSecret =
     opts.jwtSecret ??
-    (authService as any).jwtSecret ??
-    process.env.JWT_SECRET ??
+    (authService instanceof AuthService ? authService.jwtSecret : process.env.JWT_SECRET) ??
     'default-jwt-secret-for-development-must-be-32-chars';
   const authenticate = createAuthGuard(authService, jwtSecret);
 

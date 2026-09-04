@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { VoiceJournalSlot } from '../components/VoiceJournalSlot';
+import { VoiceJournalButton } from '../features/audio/VoiceJournalButton';
 import { JournalEntryPayload } from '../api/client';
 
 export interface JournalViewProps {
@@ -124,13 +125,15 @@ export const JournalView: React.FC<JournalViewProps> = ({ initialEntry, onSave, 
             <label htmlFor="journal-note" className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
               Notatka
             </label>
-            <VoiceJournalSlot
-              onDictate={(text) => {
-                if (text) {
-                  setNote((prev) => (prev ? `${prev} ${text}` : text));
-                }
-              }}
-            />
+            <VoiceJournalSlot>
+              <VoiceJournalButton
+                onDictate={(text) => {
+                  if (text) {
+                    setNote((prev) => (prev ? `${prev} ${text}` : text));
+                  }
+                }}
+              />
+            </VoiceJournalSlot>
           </div>
           <textarea
             id="journal-note"

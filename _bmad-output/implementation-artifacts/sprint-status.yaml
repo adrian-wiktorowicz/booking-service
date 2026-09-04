@@ -42,8 +42,8 @@ development_status:
   1-4-tenant-isolation-guard-account-cascade-deletion: done
   epic-1-retrospective: optional
 
-  epic-2: backlog
-  2-1-daily-entry-schema-semantic-mood-upsert: backlog
+  epic-2: in-progress
+  2-1-daily-entry-schema-semantic-mood-upsert: done
   2-2-retrieve-entry-by-date-chronological-paginated-history: backlog
   2-3-delete-journal-entry: backlog
   2-4-local-first-browser-snapshot-offline-persistence-indexeddb: backlog

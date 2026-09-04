@@ -4,12 +4,15 @@ import rateLimit from '@fastify/rate-limit';
 import { checkDatabaseHealth, closeDatabase } from './db/connection.js';
 import { AuthenticatedUser, IAuthService } from './modules/auth/auth.types.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
+import { IJournalService } from './modules/journal/journal.types.js';
+import { journalRoutes } from './modules/journal/journal.routes.js';
 
 export interface AppOptions {
   checkDb?: () => Promise<boolean>;
   logger?: boolean;
   autoCloseDb?: boolean;
   authService?: IAuthService;
+  journalService?: IJournalService;
   jwtSecret?: string;
 }
 
@@ -75,6 +78,12 @@ export const buildApp = async (options: AppOptions = {}): Promise<FastifyInstanc
   });
   await app.register(authRoutes, {
     prefix: '/api/auth',
+    authService: options.authService,
+    jwtSecret: options.jwtSecret,
+  });
+  await app.register(journalRoutes, {
+    prefix: '/api/journal',
+    journalService: options.journalService,
     authService: options.authService,
     jwtSecret: options.jwtSecret,
   });

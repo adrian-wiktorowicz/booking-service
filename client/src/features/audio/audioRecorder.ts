@@ -5,11 +5,17 @@ export class AudioRecorder {
   private audioContext: AudioContext | null = null;
   private sourceNode: MediaStreamAudioSourceNode | null = null;
   private processorNode: ScriptProcessorNode | null = null;
+  private analyserNode: AnalyserNode | null = null;
   private chunks: Float32Array[] = [];
   private recording = false;
+  public onTrackEnded?: () => void;
 
   get isRecording(): boolean {
     return this.recording;
+  }
+
+  get analyser(): AnalyserNode | null {
+    return this.analyserNode;
   }
 
   async start(): Promise<void> {
@@ -34,27 +40,60 @@ export class AudioRecorder {
       throw new Error(`Błąd dostępu do mikrofonu: ${error.message || 'Nieznany błąd'}`);
     }
 
-    const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    this.audioContext = new AudioContextClass();
-    this.sourceNode = this.audioContext.createMediaStreamSource(this.stream);
+    try {
+      const AudioContextClass =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      this.audioContext = new AudioContextClass();
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
+      }
+      this.sourceNode = this.audioContext.createMediaStreamSource(this.stream);
 
-    // Buffer size 4096, 1 input channel, 1 output channel
-    this.processorNode = this.audioContext.createScriptProcessor(4096, 1, 1);
-    this.chunks = [];
+      // Setup AnalyserNode for audio visualization
+      this.analyserNode = this.audioContext.createAnalyser();
+      this.analyserNode.fftSize = 64;
+      this.sourceNode.connect(this.analyserNode);
 
-    this.processorNode.onaudioprocess = (e) => {
-      if (!this.recording) return;
-      const channelData = e.inputBuffer.getChannelData(0);
-      this.chunks.push(new Float32Array(channelData));
-    };
+      // Buffer size 4096, 1 input channel, 1 output channel
+      this.processorNode = this.audioContext.createScriptProcessor(4096, 1, 1);
+      this.chunks = [];
 
-    this.sourceNode.connect(this.processorNode);
-    this.processorNode.connect(this.audioContext.destination);
-    this.recording = true;
+      this.processorNode.onaudioprocess = (e) => {
+        if (!this.recording) return;
+        const channelData = e.inputBuffer.getChannelData(0);
+        this.chunks.push(new Float32Array(channelData));
+      };
+
+      this.sourceNode.connect(this.processorNode);
+      this.processorNode.connect(this.audioContext.destination);
+
+      // Handle unexpected track interrupts (e.g. incoming phone call)
+      const tracks = this.stream.getAudioTracks();
+      tracks.forEach((track) => {
+        track.onended = () => {
+          if (this.recording) {
+            this.recording = false;
+            this.onTrackEnded?.();
+          }
+        };
+      });
+
+      this.recording = true;
+    } catch (err) {
+      this.stream.getTracks().forEach((t) => t.stop());
+      this.stream = null;
+      throw err;
+    }
   }
 
   async stop(): Promise<Float32Array> {
     this.recording = false;
+
+    if (this.analyserNode) {
+      this.analyserNode.disconnect();
+      this.analyserNode = null;
+    }
 
     if (this.processorNode) {
       this.processorNode.disconnect();

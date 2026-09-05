@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AudioRecorder } from './audioRecorder';
 
 describe('AudioRecorder', () => {
-  let mockTracks: { stop: ReturnType<typeof vi.fn> }[];
-  let mockStream: { getTracks: () => typeof mockTracks };
+  let mockTracks: { stop: ReturnType<typeof vi.fn>; onended?: any }[];
+  let mockStream: { getTracks: () => typeof mockTracks; getAudioTracks?: () => typeof mockTracks };
   let mockProcessor: {
     onaudioprocess: ((e: any) => void) | null;
     connect: ReturnType<typeof vi.fn>;
@@ -16,8 +16,11 @@ describe('AudioRecorder', () => {
   let mockAudioContext: any;
 
   beforeEach(() => {
-    mockTracks = [{ stop: vi.fn() }];
-    mockStream = { getTracks: () => mockTracks };
+    mockTracks = [{ stop: vi.fn(), onended: null as any }];
+    mockStream = {
+      getTracks: () => mockTracks,
+      getAudioTracks: () => mockTracks,
+    };
 
     mockProcessor = {
       onaudioprocess: null,
@@ -30,10 +33,17 @@ describe('AudioRecorder', () => {
       disconnect: vi.fn(),
     };
 
+    const mockAnalyser = {
+      fftSize: 64,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    };
+
     mockAudioContext = {
       sampleRate: 48000,
       createMediaStreamSource: vi.fn().mockReturnValue(mockSource),
       createScriptProcessor: vi.fn().mockReturnValue(mockProcessor),
+      createAnalyser: vi.fn().mockReturnValue(mockAnalyser),
       destination: {},
       close: vi.fn().mockResolvedValue(undefined),
     };
@@ -101,5 +111,43 @@ describe('AudioRecorder', () => {
     const recorder = new AudioRecorder();
     await expect(recorder.start()).rejects.toThrow(/nie obsługuje nagrywania|HTTPS/i);
     expect(recorder.isRecording).toBe(false);
+  });
+
+  it('exposes AnalyserNode when recording and cleans it up on stop', async () => {
+    const recorder = new AudioRecorder();
+    expect(recorder.analyser).toBeNull();
+
+    await recorder.start();
+    expect(recorder.analyser).not.toBeNull();
+    expect(mockAudioContext.createAnalyser).toHaveBeenCalled();
+
+    await recorder.stop();
+    expect(recorder.analyser).toBeNull();
+  });
+
+  it('triggers onTrackEnded callback and preserves captured chunks when track ends prematurely', async () => {
+    const recorder = new AudioRecorder();
+    const handleTrackEnded = vi.fn();
+    recorder.onTrackEnded = handleTrackEnded;
+
+    await recorder.start();
+
+    // Simulate audio data
+    if (mockProcessor.onaudioprocess) {
+      mockProcessor.onaudioprocess({
+        inputBuffer: {
+          getChannelData: () => new Float32Array([0.1, 0.2, 0.3]),
+        },
+      });
+    }
+
+    // Simulate track interruption (e.g. phone call)
+    expect(mockTracks[0].onended).toBeDefined();
+    mockTracks[0].onended();
+    expect(handleTrackEnded).toHaveBeenCalledTimes(1);
+
+    // Stop and ensure audio chunks are preserved
+    const audioData = await recorder.stop();
+    expect(audioData.length).toBeGreaterThan(0);
   });
 });

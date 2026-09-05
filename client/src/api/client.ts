@@ -116,7 +116,11 @@ export class ApiClient {
   async saveJournalEntry(entry: JournalEntryPayload) {
     return this.request<{ success: boolean; entry: JournalEntryPayload }>(`/api/journal/entries/${entry.entryDate}`, {
       method: 'PUT',
-      body: JSON.stringify(entry),
+      body: JSON.stringify({
+        mood: entry.mood,
+        notes: entry.note,
+        tags: entry.tags,
+      }),
     });
   }
 }

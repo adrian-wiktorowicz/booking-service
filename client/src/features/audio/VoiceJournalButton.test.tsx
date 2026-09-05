@@ -20,6 +20,11 @@ class MockWorker {
 
 class MockAudioRecorder {
   isRecording = false;
+  onTrackEnded?: () => void;
+  analyser: any = {
+    frequencyBinCount: 32,
+    getByteFrequencyData: vi.fn((arr: Uint8Array) => arr.fill(128)),
+  };
   start = vi.fn().mockImplementation(async () => {
     this.isRecording = true;
   });
@@ -128,5 +133,93 @@ describe('VoiceJournalButton', () => {
 
     expect(screen.getByText(/brak uprawnień do mikrofonu/i)).toBeInTheDocument();
     expect(screen.getByText(/wpisz treść ręcznie/i)).toBeInTheDocument();
+  });
+
+  it('displays active recording timer showing 00:00 / 02:00 and 12-bar wave visualizer', async () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <VoiceJournalButton
+          workerFactory={() => mockWorker as unknown as Worker}
+          recorderFactory={() => mockRecorder as unknown as any}
+        />
+      );
+
+      const button = screen.getByRole('button', { name: /dyktafon|nagrywaj|mikrofon/i });
+
+      await act(async () => {
+        fireEvent.click(button);
+      });
+
+      // Check timer initial display
+      expect(screen.getByText(/00:00 \/ 02:00/)).toBeInTheDocument();
+
+      // Check 12-bar visualizer is rendered
+      const visualizer = screen.getByTestId('audio-wave-visualizer');
+      expect(visualizer).toBeInTheDocument();
+      expect(visualizer.children).toHaveLength(12);
+
+      // Advance time by 5 seconds
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+
+      expect(screen.getByText(/00:05 \/ 02:00/)).toBeInTheDocument();
+      expect(mockRecorder.analyser.getByteFrequencyData).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('automatically stops recording when reaching 2-minute limit (120 seconds)', async () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <VoiceJournalButton
+          workerFactory={() => mockWorker as unknown as Worker}
+          recorderFactory={() => mockRecorder as unknown as any}
+        />
+      );
+
+      const button = screen.getByRole('button', { name: /dyktafon|nagrywaj|mikrofon/i });
+
+      await act(async () => {
+        fireEvent.click(button);
+      });
+
+      expect(mockRecorder.start).toHaveBeenCalled();
+
+      // Fast-forward 120 seconds
+      await act(async () => {
+        vi.advanceTimersByTime(120000);
+      });
+
+      expect(mockRecorder.stop).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('handles track interrupt by preserving audio, requesting transcription, and showing banner', async () => {
+    render(
+      <VoiceJournalButton
+        workerFactory={() => mockWorker as unknown as Worker}
+        recorderFactory={() => mockRecorder as unknown as any}
+      />
+    );
+
+    const button = screen.getByRole('button', { name: /dyktafon|nagrywaj|mikrofon/i });
+
+    await act(async () => {
+      fireEvent.click(button);
+    });
+
+    // Simulate track interruption (e.g. phone call)
+    await act(async () => {
+      mockRecorder.onTrackEnded?.();
+    });
+
+    expect(mockRecorder.stop).toHaveBeenCalled();
+    expect(screen.getByText(/przerwane|zapisano dotychczasowe/i)).toBeInTheDocument();
   });
 });

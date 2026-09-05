@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useWhisperTranscriber, WhisperTranscriberOptions } from './useWhisperTranscriber';
 
 export interface VoiceJournalButtonProps extends WhisperTranscriberOptions {
@@ -17,6 +17,9 @@ export const VoiceJournalButton: React.FC<VoiceJournalButtonProps> = ({
   workerFactory,
   recorderFactory,
 }) => {
+  const [secondsElapsed, setSecondsElapsed] = useState(0);
+  const [bars, setBars] = useState<number[]>(() => Array(12).fill(25));
+
   const handleTranscript = (text: string) => {
     onTranscript?.(text);
     onDictate?.(text);
@@ -30,6 +33,7 @@ export const VoiceJournalButton: React.FC<VoiceJournalButtonProps> = ({
     error,
     startRecording,
     stopRecording,
+    getAnalyser,
   } = useWhisperTranscriber({
     onTranscript: handleTranscript,
     model,
@@ -37,6 +41,66 @@ export const VoiceJournalButton: React.FC<VoiceJournalButtonProps> = ({
     workerFactory,
     recorderFactory,
   });
+
+  useEffect(() => {
+    if (!isRecording) {
+      setSecondsElapsed(0);
+      return;
+    }
+    const timerId = setInterval(() => {
+      setSecondsElapsed((prev) => {
+        if (prev >= 120) return 120;
+        return prev + 1;
+      });
+    }, 1000);
+    return () => clearInterval(timerId);
+  }, [isRecording]);
+
+  useEffect(() => {
+    if (isRecording && secondsElapsed >= 120) {
+      void stopRecording();
+    }
+  }, [isRecording, secondsElapsed, stopRecording]);
+
+  useEffect(() => {
+    if (!isRecording) return;
+    let animId: number;
+    let lastUpdate = 0;
+    const analyser = getAnalyser();
+    const bufferLength = analyser?.frequencyBinCount || 32;
+    const dataArray = new Uint8Array(bufferLength);
+
+    const updateBars = (timestamp: number) => {
+      if (analyser) {
+        analyser.getByteFrequencyData(dataArray);
+
+        if (timestamp - lastUpdate >= 60) {
+          lastUpdate = timestamp;
+          const step = Math.max(1, Math.floor(bufferLength / 12));
+          const nextBars: number[] = [];
+          for (let i = 0; i < 12; i++) {
+            const idx = Math.min(i * step, bufferLength - 1);
+            const val = dataArray[idx] ?? 0;
+            const heightPct = Math.max(20, Math.min(100, Math.round((val / 255) * 100)));
+            nextBars.push(heightPct);
+          }
+          setBars(nextBars);
+        }
+      }
+      animId = requestAnimationFrame(updateBars);
+    };
+
+    animId = requestAnimationFrame(updateBars);
+    return () => {
+      if (animId) cancelAnimationFrame(animId);
+    };
+  }, [isRecording, getAnalyser]);
+
+  const formatTime = (secs: number) => {
+    const m = String(Math.floor(secs / 60)).padStart(2, '0');
+    const s = String(secs % 60).padStart(2, '0');
+    return `${m}:${s} / 02:00`;
+  };
 
   const handleClick = async () => {
     if (isRecording) {
@@ -120,6 +184,27 @@ export const VoiceJournalButton: React.FC<VoiceJournalButtonProps> = ({
             </>
           )}
         </button>
+
+        {isRecording && (
+          <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#fdf2f0] border border-[#f5c6cb]">
+            <div
+              data-testid="audio-wave-visualizer"
+              className="flex items-center gap-0.5 h-4 px-0.5"
+              aria-hidden="true"
+            >
+              {bars.map((height, i) => (
+                <span
+                  key={i}
+                  className="w-1 bg-[#8c2a1c] rounded-full transition-all duration-75"
+                  style={{ height: `${height}%` }}
+                />
+              ))}
+            </div>
+            <span className="text-xs font-mono font-medium text-[#8c2a1c]">
+              {formatTime(secondsElapsed)}
+            </span>
+          </div>
+        )}
 
         {isModelLoading && (
           <div className="inline-flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-[#4a3525] bg-[#faf9f6] border border-[#ded8ce] rounded-md">

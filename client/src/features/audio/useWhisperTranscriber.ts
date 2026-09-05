@@ -18,6 +18,7 @@ export interface WhisperTranscriberResult {
   error: string | null;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<void>;
+  getAnalyser: () => AnalyserNode | null;
 }
 
 export function useWhisperTranscriber(
@@ -86,26 +87,21 @@ export function useWhisperTranscriber(
     return recorderRef.current;
   }, [recorderFactory]);
 
+  const isStartingRef = useRef(false);
+
   useEffect(() => {
     const worker = getWorker();
     return () => {
       worker?.terminate();
       workerRef.current = null;
+      if (recorderRef.current?.isRecording) {
+        void recorderRef.current.stop();
+      }
+      recorderRef.current = null;
     };
   }, [getWorker]);
 
-  const startRecording = useCallback(async () => {
-    setError(null);
-    try {
-      const recorder = getRecorder();
-      await recorder.start();
-      setIsRecording(true);
-    } catch (err: unknown) {
-      setIsRecording(false);
-      const message = err instanceof Error ? err.message : 'Nie udało się rozpocząć nagrywania';
-      setError(message);
-    }
-  }, [getRecorder]);
+  const stopRecordingRef = useRef<() => Promise<void>>(async () => {});
 
   const stopRecording = useCallback(async () => {
     try {
@@ -136,6 +132,34 @@ export function useWhisperTranscriber(
     }
   }, [getRecorder, getWorker, model, language]);
 
+  stopRecordingRef.current = stopRecording;
+
+  const startRecording = useCallback(async () => {
+    if (isStartingRef.current) return;
+    isStartingRef.current = true;
+    setError(null);
+    try {
+      const recorder = getRecorder();
+      if (recorder.isRecording) return;
+      recorder.onTrackEnded = async () => {
+        setError('Połączenie z mikrofonem zostało przerwane. Zapisano dotychczasowe nagranie.');
+        await stopRecordingRef.current();
+      };
+      await recorder.start();
+      setIsRecording(true);
+    } catch (err: unknown) {
+      setIsRecording(false);
+      const message = err instanceof Error ? err.message : 'Nie udało się rozpocząć nagrywania';
+      setError(message);
+    } finally {
+      isStartingRef.current = false;
+    }
+  }, [getRecorder]);
+
+  const getAnalyser = useCallback((): AnalyserNode | null => {
+    return recorderRef.current?.analyser ?? null;
+  }, []);
+
   return {
     isModelLoading,
     loadingProgress,
@@ -145,5 +169,6 @@ export function useWhisperTranscriber(
     error,
     startRecording,
     stopRecording,
+    getAnalyser,
   };
 }

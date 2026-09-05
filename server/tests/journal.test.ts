@@ -8,6 +8,7 @@ import {
   InvalidDateError,
   InvalidMoodError,
   PayloadValidationError,
+  EntryNotFoundError,
 } from '../src/modules/journal/journal.types.js';
 import { IAuthService, UserRecord } from '../src/modules/auth/auth.types.js';
 import { JournalService, isValidCalendarDate } from '../src/modules/journal/journal.service.js';
@@ -51,6 +52,35 @@ export class InMemoryJournalRepository implements IJournalRepository {
     this.entries.push(newEntry);
     return newEntry;
   }
+
+  async findByDate(userId: string, entryDate: string): Promise<JournalEntryRecord | null> {
+    const entry = this.entries.find((e) => e.userId === userId && e.entryDate === entryDate);
+    return entry ? { ...entry } : null;
+  }
+
+  async findMany(
+    userId: string,
+    options: {
+      offset: number;
+      limit: number;
+      startDate?: string;
+      endDate?: string;
+    }
+  ): Promise<{ entries: JournalEntryRecord[]; total: number }> {
+    let filtered = this.entries.filter((e) => e.userId === userId);
+    if (options.startDate && options.startDate.trim() !== '') {
+      filtered = filtered.filter((e) => e.entryDate >= options.startDate!);
+    }
+    if (options.endDate && options.endDate.trim() !== '') {
+      filtered = filtered.filter((e) => e.entryDate <= options.endDate!);
+    }
+    filtered.sort((a, b) => b.entryDate.localeCompare(a.entryDate));
+    const total = filtered.length;
+    const entries = filtered
+      .slice(options.offset, options.offset + options.limit)
+      .map((e) => ({ ...e }));
+    return { entries, total };
+  }
 }
 
 const mockAuthService: IAuthService = {
@@ -73,6 +103,14 @@ const mockAuthService: IAuthService = {
       return {
         id: 'user-456',
         email: 'other@example.com',
+        passwordHash: 'hash',
+        createdAt: new Date(),
+      };
+    }
+    if (userId === 'empty-user') {
+      return {
+        id: 'empty-user',
+        email: 'empty@example.com',
         passwordHash: 'hash',
         createdAt: new Date(),
       };
@@ -580,6 +618,708 @@ describe('PUT /api/journal/entries/:date HTTP Integration Tests', () => {
     expect(journalRepo.entries[0].notes).toBe('User 1 note');
     expect(journalRepo.entries[1].userId).toBe('user-456');
     expect(journalRepo.entries[1].notes).toBe('User 2 note');
+
+    await app.close();
+  });
+});
+
+describe('Story 2.2: JournalService getEntryByDate and getEntries Unit Tests', () => {
+  let journalRepo: InMemoryJournalRepository;
+  let journalService: JournalService;
+
+  beforeEach(() => {
+    journalRepo = new InMemoryJournalRepository();
+    journalService = new JournalService(journalRepo);
+  });
+
+  describe('getEntryByDate', () => {
+    it('returns existing entry for valid date', async () => {
+      await journalService.saveEntry('user-123', '2026-09-03', {
+        notes: 'Testing entry lookup',
+        mood: 'good',
+        tags: ['focus'],
+      });
+
+      const entry = await journalService.getEntryByDate('user-123', '2026-09-03');
+      expect(entry).toBeDefined();
+      expect(entry.userId).toBe('user-123');
+      expect(entry.entryDate).toBe('2026-09-03');
+      expect(entry.notes).toBe('Testing entry lookup');
+      expect(entry.mood).toBe('good');
+      expect(entry.tags).toEqual(['focus']);
+      expect(entry.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+      expect(entry.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    });
+
+    it('throws EntryNotFoundError when no entry exists for date', async () => {
+      await expect(
+        journalService.getEntryByDate('user-123', '2026-09-03')
+      ).rejects.toThrow(EntryNotFoundError);
+    });
+
+    it('throws EntryNotFoundError when entry exists for different user (IDOR defense)', async () => {
+      await journalService.saveEntry('user-456', '2026-09-03', {
+        notes: 'User 456 private notes',
+        mood: 'good',
+      });
+
+      await expect(
+        journalService.getEntryByDate('user-123', '2026-09-03')
+      ).rejects.toThrow(EntryNotFoundError);
+    });
+
+    it('throws InvalidDateError for invalid calendar dates', async () => {
+      await expect(
+        journalService.getEntryByDate('user-123', '2026-02-30')
+      ).rejects.toThrow(InvalidDateError);
+      await expect(
+        journalService.getEntryByDate('user-123', 'invalid-date')
+      ).rejects.toThrow(InvalidDateError);
+    });
+  });
+
+  describe('getEntries', () => {
+    beforeEach(async () => {
+      // Seed entries for user-123 across multiple dates
+      const dates = [
+        '2026-08-01',
+        '2026-08-15',
+        '2026-08-20',
+        '2026-08-31',
+        '2026-09-01',
+        '2026-09-03',
+      ];
+      for (const d of dates) {
+        await journalService.saveEntry('user-123', d, {
+          notes: `Notes for ${d}`,
+          mood: 'good',
+          tags: [d],
+        });
+      }
+      // Seed entry for another user
+      await journalService.saveEntry('user-456', '2026-09-02', {
+        notes: 'Other user note',
+        mood: 'neutral',
+      });
+    });
+
+    it('returns entries with default pagination (page=1, limit=20) ordered entry_date DESC', async () => {
+      const result = await journalService.getEntries('user-123');
+      expect(result.pagination).toEqual({
+        page: 1,
+        limit: 20,
+        total: 6,
+        hasMore: false,
+      });
+      expect(result.entries).toHaveLength(6);
+      expect(result.entries[0].entryDate).toBe('2026-09-03');
+      expect(result.entries[5].entryDate).toBe('2026-08-01');
+      // Verify other user's entry is not included
+      expect(result.entries.some((e) => e.userId === 'user-456')).toBe(false);
+    });
+
+    it('handles custom pagination page and limit with hasMore true/false', async () => {
+      const page1 = await journalService.getEntries('user-123', { page: 1, limit: 2 });
+      expect(page1.entries).toHaveLength(2);
+      expect(page1.entries[0].entryDate).toBe('2026-09-03');
+      expect(page1.entries[1].entryDate).toBe('2026-09-01');
+      expect(page1.pagination).toEqual({
+        page: 1,
+        limit: 2,
+        total: 6,
+        hasMore: true,
+      });
+
+      const page3 = await journalService.getEntries('user-123', { page: 3, limit: 2 });
+      expect(page3.entries).toHaveLength(2);
+      expect(page3.entries[0].entryDate).toBe('2026-08-15');
+      expect(page3.entries[1].entryDate).toBe('2026-08-01');
+      expect(page3.pagination).toEqual({
+        page: 3,
+        limit: 2,
+        total: 6,
+        hasMore: false,
+      });
+    });
+
+    it('filters entries by inclusive date range startDate and endDate', async () => {
+      const result = await journalService.getEntries('user-123', {
+        startDate: '2026-08-01',
+        endDate: '2026-08-31',
+      });
+      expect(result.pagination.total).toBe(4);
+      expect(result.entries).toHaveLength(4);
+      expect(result.entries.map((e) => e.entryDate)).toEqual([
+        '2026-08-31',
+        '2026-08-20',
+        '2026-08-15',
+        '2026-08-01',
+      ]);
+    });
+
+    it('filters entries with only startDate', async () => {
+      const result = await journalService.getEntries('user-123', {
+        startDate: '2026-09-01',
+      });
+      expect(result.pagination.total).toBe(2);
+      expect(result.entries.map((e) => e.entryDate)).toEqual(['2026-09-03', '2026-09-01']);
+    });
+
+    it('filters entries with only endDate', async () => {
+      const result = await journalService.getEntries('user-123', {
+        endDate: '2026-08-15',
+      });
+      expect(result.pagination.total).toBe(2);
+      expect(result.entries.map((e) => e.entryDate)).toEqual(['2026-08-15', '2026-08-01']);
+    });
+
+    it('throws PayloadValidationError when startDate > endDate', async () => {
+      await expect(
+        journalService.getEntries('user-123', {
+          startDate: '2026-09-10',
+          endDate: '2026-09-01',
+        })
+      ).rejects.toThrow(PayloadValidationError);
+      await expect(
+        journalService.getEntries('user-123', {
+          startDate: '2026-09-10',
+          endDate: '2026-09-01',
+        })
+      ).rejects.toMatchObject({ message: 'startDate must not be after endDate' });
+    });
+
+    it('throws InvalidDateError when startDate or endDate is invalid calendar date', async () => {
+      await expect(
+        journalService.getEntries('user-123', { startDate: '2026-02-30' })
+      ).rejects.toThrow(InvalidDateError);
+      await expect(
+        journalService.getEntries('user-123', { endDate: 'invalid' })
+      ).rejects.toThrow(InvalidDateError);
+    });
+
+    it('throws PayloadValidationError when page < 1 or limit < 1', async () => {
+      await expect(
+        journalService.getEntries('user-123', { page: 0 })
+      ).rejects.toThrow(PayloadValidationError);
+      await expect(
+        journalService.getEntries('user-123', { limit: 0 })
+      ).rejects.toThrow(PayloadValidationError);
+      await expect(
+        journalService.getEntries('user-123', { page: -1 })
+      ).rejects.toThrow(PayloadValidationError);
+      await expect(
+        journalService.getEntries('user-123', { limit: -5 })
+      ).rejects.toThrow(PayloadValidationError);
+    });
+
+    it('returns empty array and total 0 for user with no entries', async () => {
+      const result = await journalService.getEntries('empty-user');
+      expect(result.entries).toEqual([]);
+      expect(result.pagination).toEqual({
+        page: 1,
+        limit: 20,
+        total: 0,
+        hasMore: false,
+      });
+    });
+  });
+});
+
+describe('Story 2.2: GET /api/journal/entries/:date Route Integration Tests', () => {
+  let journalRepo: InMemoryJournalRepository;
+  let journalService: JournalService;
+  let validToken: string;
+
+  beforeEach(async () => {
+    journalRepo = new InMemoryJournalRepository();
+    journalService = new JournalService(journalRepo);
+    validToken = signJwt({ userId: 'user-123' }, JWT_SECRET, 86400);
+
+    await journalRepo.upsert('user-123', '2026-09-03', {
+      notes: 'Existing entry notes',
+      mood: 'good',
+      tags: ['coding'],
+    });
+
+    await journalRepo.upsert('user-456', '2026-09-03', {
+      notes: 'User 456 notes',
+      mood: 'neutral',
+      tags: ['other'],
+    });
+  });
+
+  it('AC1: returns 200 with entry details for existing date belonging to user', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries/2026-09-03',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body).toMatchObject({
+      userId: 'user-123',
+      entryDate: '2026-09-03',
+      notes: 'Existing entry notes',
+      mood: 'good',
+      tags: ['coding'],
+    });
+    expect(body.id).toBeDefined();
+    expect(body.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    expect(body.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+
+    await app.close();
+  });
+
+  it('AC2: returns 404 with ENTRY_NOT_FOUND when no entry exists for user on date', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries/2026-09-04',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'ENTRY_NOT_FOUND',
+        message: 'No entry found for this date',
+      },
+    });
+
+    await app.close();
+  });
+
+  it('AC2/IDOR: returns 404 when entry exists for another user on that date', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    // user-123 queries 2026-09-05 (only user-456 has entry)
+    await journalRepo.upsert('user-456', '2026-09-05', {
+      notes: 'Private',
+      mood: 'bad',
+      tags: [],
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries/2026-09-05',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'ENTRY_NOT_FOUND',
+        message: 'No entry found for this date',
+      },
+    });
+
+    await app.close();
+  });
+
+  it('AC4: returns 422 INVALID_DATE for nonexistent calendar date 2026-02-30', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries/2026-02-30',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'INVALID_DATE',
+        message: 'Invalid calendar date',
+      },
+    });
+
+    await app.close();
+  });
+
+  it('AC5: returns 401 UNAUTHORIZED when no token is provided', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries/2026-09-03',
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required',
+      },
+    });
+
+    await app.close();
+  });
+});
+
+describe('Story 2.2: GET /api/journal/entries Route Integration Tests', () => {
+  let journalRepo: InMemoryJournalRepository;
+  let journalService: JournalService;
+  let validToken: string;
+
+  beforeEach(async () => {
+    journalRepo = new InMemoryJournalRepository();
+    journalService = new JournalService(journalRepo);
+    validToken = signJwt({ userId: 'user-123' }, JWT_SECRET, 86400);
+
+    const dates = [
+      '2026-08-01',
+      '2026-08-15',
+      '2026-08-20',
+      '2026-08-31',
+      '2026-09-01',
+      '2026-09-03',
+    ];
+    for (const d of dates) {
+      await journalRepo.upsert('user-123', d, {
+        notes: `Note ${d}`,
+        mood: 'good',
+        tags: [d],
+      });
+    }
+
+    await journalRepo.upsert('user-456', '2026-09-02', {
+      notes: 'User 456 note',
+      mood: 'neutral',
+      tags: [],
+    });
+  });
+
+  it('AC3: returns 200 with default paginated list sorted entry_date DESC', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.pagination).toEqual({
+      page: 1,
+      limit: 20,
+      total: 6,
+      hasMore: false,
+    });
+    expect(body.entries).toHaveLength(6);
+    expect(body.entries[0].entryDate).toBe('2026-09-03');
+    expect(body.entries[5].entryDate).toBe('2026-08-01');
+    expect(body.entries.every((e: any) => e.userId === 'user-123')).toBe(true);
+    expect(body.entries[0].createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    expect(body.entries[0].updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+
+    await app.close();
+  });
+
+  it('AC3: supports page and limit query params', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries?page=2&limit=2',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.pagination).toEqual({
+      page: 2,
+      limit: 2,
+      total: 6,
+      hasMore: true,
+    });
+    expect(body.entries).toHaveLength(2);
+    expect(body.entries[0].entryDate).toBe('2026-08-31');
+    expect(body.entries[1].entryDate).toBe('2026-08-20');
+
+    await app.close();
+  });
+
+  it('AC4: supports inclusive date range filtering startDate and endDate', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries?startDate=2026-08-01&endDate=2026-08-31',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.pagination.total).toBe(4);
+    expect(body.entries).toHaveLength(4);
+    expect(body.entries.map((e: any) => e.entryDate)).toEqual([
+      '2026-08-31',
+      '2026-08-20',
+      '2026-08-15',
+      '2026-08-01',
+    ]);
+
+    await app.close();
+  });
+
+  it('AC4: supports single filter boundary startDate', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries?startDate=2026-09-01',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.pagination.total).toBe(2);
+    expect(body.entries.map((e: any) => e.entryDate)).toEqual(['2026-09-03', '2026-09-01']);
+
+    await app.close();
+  });
+
+  it('AC5: returns 422 VALIDATION_ERROR when startDate > endDate', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries?startDate=2026-09-10&endDate=2026-09-01',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'startDate must not be after endDate',
+      },
+    });
+
+    await app.close();
+  });
+
+  it('AC6: returns 422 INVALID_DATE when filter date is invalid calendar date', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries?startDate=2026-02-30',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'INVALID_DATE',
+        message: 'Invalid calendar date',
+      },
+    });
+
+    await app.close();
+  });
+
+  it('AC7: returns 422 VALIDATION_ERROR when limit exceeds 50', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries?limit=51',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Validation failed',
+      },
+    });
+
+    await app.close();
+  });
+
+  it('returns 422 VALIDATION_ERROR when page is less than 1', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries?page=0',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Validation failed',
+      },
+    });
+
+    await app.close();
+  });
+
+  it('returns 422 VALIDATION_ERROR when limit is less than 1', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries?limit=0',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Validation failed',
+      },
+    });
+
+    await app.close();
+  });
+
+  it('AC8: returns 200 with empty list for user with 0 entries', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const otherToken = signJwt({ userId: 'empty-user' }, JWT_SECRET, 86400);
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries',
+      headers: { authorization: `Bearer ${otherToken}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body).toEqual({
+      entries: [],
+      pagination: {
+        page: 1,
+        limit: 20,
+        total: 0,
+        hasMore: false,
+      },
+    });
+
+    await app.close();
+  });
+
+  it('AC9: returns 401 UNAUTHORIZED when no token provided', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries',
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required',
+      },
+    });
 
     await app.close();
   });

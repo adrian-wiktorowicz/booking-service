@@ -54,12 +54,48 @@ export class InvalidMoodError extends PayloadValidationError {
   }
 }
 
+export class EntryNotFoundError extends Error {
+  readonly code = 'ENTRY_NOT_FOUND';
+  readonly statusCode = 404;
+  constructor(message: string = 'No entry found for this date') {
+    super(message);
+    this.name = 'EntryNotFoundError';
+  }
+}
+
+export interface JournalFilterOptions {
+  page?: number;
+  limit?: number;
+  startDate?: string;
+  endDate?: string;
+}
+
+export interface PaginatedJournalEntriesResponse {
+  entries: JournalEntryResponse[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    hasMore: boolean;
+  };
+}
+
 export interface IJournalRepository {
   upsert(
     userId: string,
     entryDate: string,
     data: { notes: string; mood: Mood; tags: string[] }
   ): Promise<JournalEntryRecord>;
+  findByDate(userId: string, entryDate: string): Promise<JournalEntryRecord | null>;
+  findMany(
+    userId: string,
+    options: {
+      offset: number;
+      limit: number;
+      startDate?: string;
+      endDate?: string;
+    }
+  ): Promise<{ entries: JournalEntryRecord[]; total: number }>;
 }
 
 export interface IJournalService {
@@ -68,4 +104,9 @@ export interface IJournalService {
     dateStr: string,
     input: UpsertJournalEntryInput
   ): Promise<JournalEntryResponse>;
+  getEntryByDate(userId: string, dateStr: string): Promise<JournalEntryResponse>;
+  getEntries(
+    userId: string,
+    options?: JournalFilterOptions
+  ): Promise<PaginatedJournalEntriesResponse>;
 }

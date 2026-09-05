@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { AudioRecorder } from './audioRecorder';
+import { validateContentSafety } from './contentFilter';
 
 export interface WhisperTranscriberOptions {
   onTranscript?: (transcript: string) => void;
@@ -16,9 +17,11 @@ export interface WhisperTranscriberResult {
   isTranscribing: boolean;
   transcript: string;
   error: string | null;
+  elapsedSeconds: number;
+  isInterrupted: boolean;
+  getAnalyser: () => AnalyserNode | null;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<void>;
-  getAnalyser: () => AnalyserNode | null;
 }
 
 export function useWhisperTranscriber(
@@ -32,6 +35,8 @@ export function useWhisperTranscriber(
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [isInterrupted, setIsInterrupted] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
   const recorderRef = useRef<AudioRecorder | null>(null);
@@ -68,6 +73,15 @@ export function useWhisperTranscriber(
         } else if (data.type === 'transcribe_complete') {
           setIsTranscribing(false);
           const resultText = data.transcript || '';
+
+          // Validate against harmful content & terroristic threats
+          const safety = validateContentSafety(resultText);
+          if (!safety.isSafe) {
+            setError(safety.reason || 'Wykryto niedozwolone treści. Zapis zablokowany.');
+            setTranscript('');
+            return;
+          }
+
           setTranscript(resultText);
           onTranscriptRef.current?.(resultText);
         } else if (data.type === 'error') {
@@ -80,36 +94,15 @@ export function useWhisperTranscriber(
     return workerRef.current;
   }, [workerFactory]);
 
-  const getRecorder = useCallback((): AudioRecorder => {
-    if (!recorderRef.current) {
-      recorderRef.current = recorderFactory ? recorderFactory() : new AudioRecorder();
-    }
-    return recorderRef.current;
-  }, [recorderFactory]);
-
-  const isStartingRef = useRef(false);
-
-  useEffect(() => {
-    const worker = getWorker();
-    return () => {
-      worker?.terminate();
-      workerRef.current = null;
-      if (recorderRef.current?.isRecording) {
-        void recorderRef.current.stop();
-      }
-      recorderRef.current = null;
-    };
-  }, [getWorker]);
-
-  const stopRecordingRef = useRef<() => Promise<void>>(async () => {});
-
   const stopRecording = useCallback(async () => {
     try {
-      const recorder = getRecorder();
-      const audioData = await recorder.stop();
+      if (!recorderRef.current) return;
+      const audioData = await recorderRef.current.stop();
       setIsRecording(false);
+      setElapsedSeconds(0);
 
       if (!audioData || audioData.length === 0) {
+        // Empty audio buffer, skip inference
         return;
       }
 
@@ -118,47 +111,68 @@ export function useWhisperTranscriber(
       if (!worker) {
         throw new Error('Web Worker nie jest dostępny w tej przeglądarce.');
       }
-      worker.postMessage({
-        type: 'transcribe',
-        audio: audioData,
-        model,
-        language,
-      });
+
+      // Zero-copy ArrayBuffer transfer
+      worker.postMessage(
+        {
+          type: 'transcribe',
+          audio: audioData,
+          model,
+          language,
+        },
+        [audioData.buffer]
+      );
     } catch (err: unknown) {
       setIsRecording(false);
       setIsTranscribing(false);
+      setElapsedSeconds(0);
       const message = err instanceof Error ? err.message : 'Błąd podczas zatrzymywania nagrywania';
       setError(message);
     }
-  }, [getRecorder, getWorker, model, language]);
-
-  stopRecordingRef.current = stopRecording;
-
-  const startRecording = useCallback(async () => {
-    if (isStartingRef.current) return;
-    isStartingRef.current = true;
-    setError(null);
-    try {
-      const recorder = getRecorder();
-      if (recorder.isRecording) return;
-      recorder.onTrackEnded = async () => {
-        setError('Połączenie z mikrofonem zostało przerwane. Zapisano dotychczasowe nagranie.');
-        await stopRecordingRef.current();
-      };
-      await recorder.start();
-      setIsRecording(true);
-    } catch (err: unknown) {
-      setIsRecording(false);
-      const message = err instanceof Error ? err.message : 'Nie udało się rozpocząć nagrywania';
-      setError(message);
-    } finally {
-      isStartingRef.current = false;
-    }
-  }, [getRecorder]);
+  }, [getWorker, model, language]);
 
   const getAnalyser = useCallback((): AnalyserNode | null => {
     return recorderRef.current?.analyser ?? null;
   }, []);
+
+  const getRecorder = useCallback((): AudioRecorder => {
+    if (!recorderRef.current) {
+      recorderRef.current = recorderFactory ? recorderFactory() : new AudioRecorder();
+      recorderRef.current.onDurationUpdate = (sec) => setElapsedSeconds(sec);
+      recorderRef.current.onMaxDurationReached = () => {
+        stopRecording();
+      };
+      recorderRef.current.onTrackEnded = () => {
+        setIsInterrupted(true);
+        stopRecording();
+      };
+    }
+    return recorderRef.current;
+  }, [recorderFactory, stopRecording]);
+
+  useEffect(() => {
+    const worker = getWorker();
+    return () => {
+      worker?.terminate();
+      workerRef.current = null;
+    };
+  }, [getWorker]);
+
+  const startRecording = useCallback(async () => {
+    setError(null);
+    setElapsedSeconds(0);
+    setIsInterrupted(false);
+    try {
+      const recorder = getRecorder();
+      await recorder.start();
+      setIsRecording(true);
+    } catch (err: unknown) {
+      setIsRecording(false);
+      setElapsedSeconds(0);
+      const message = err instanceof Error ? err.message : 'Nie udało się rozpocząć nagrywania';
+      setError(message);
+    }
+  }, [getRecorder]);
 
   return {
     isModelLoading,
@@ -167,8 +181,10 @@ export function useWhisperTranscriber(
     isTranscribing,
     transcript,
     error,
+    elapsedSeconds,
+    isInterrupted,
+    getAnalyser,
     startRecording,
     stopRecording,
-    getAnalyser,
   };
 }

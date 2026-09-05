@@ -11,7 +11,6 @@ class MockWorker {
   });
   removeEventListener = vi.fn();
 
-  // Helper for test to simulate worker message
   emitMessage(data: any) {
     if (this.onmessage) {
       this.onmessage({ data } as MessageEvent);
@@ -21,6 +20,9 @@ class MockWorker {
 
 class MockAudioRecorder {
   isRecording = false;
+  elapsedSeconds = 0;
+  onDurationUpdate?: (sec: number) => void;
+  onMaxDurationReached?: () => void;
   start = vi.fn().mockImplementation(async () => {
     this.isRecording = true;
   });
@@ -43,7 +45,7 @@ describe('useWhisperTranscriber', () => {
     vi.restoreAllMocks();
   });
 
-  it('provides initial default states', () => {
+  it('provides initial default states including elapsedSeconds', () => {
     const { result } = renderHook(() =>
       useWhisperTranscriber({
         workerFactory: () => mockWorker as unknown as Worker,
@@ -57,6 +59,7 @@ describe('useWhisperTranscriber', () => {
     expect(result.current.isTranscribing).toBe(false);
     expect(result.current.transcript).toBe('');
     expect(result.current.error).toBeNull();
+    expect(result.current.elapsedSeconds).toBe(0);
   });
 
   it('tracks model loading progress from worker events', () => {
@@ -120,7 +123,7 @@ describe('useWhisperTranscriber', () => {
     expect(result.current.error).toContain('Brak uprawnień do mikrofonu');
   });
 
-  it('stops recording, submits audio to worker, and receives transcript', async () => {
+  it('stops recording, submits audio to worker with zero-copy buffer, and receives safe transcript', async () => {
     const onTranscriptMock = vi.fn();
     const { result } = renderHook(() =>
       useWhisperTranscriber({
@@ -141,14 +144,16 @@ describe('useWhisperTranscriber', () => {
     expect(mockRecorder.stop).toHaveBeenCalled();
     expect(result.current.isRecording).toBe(false);
     expect(result.current.isTranscribing).toBe(true);
+    // Verifying zero-copy transfer [audio.buffer] passed as second arg
     expect(mockWorker.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'transcribe',
         audio: expect.any(Float32Array),
-      })
+      }),
+      expect.any(Array)
     );
 
-    // Simulate worker returning transcript
+    // Simulate worker returning benign transcript
     act(() => {
       mockWorker.emitMessage({
         type: 'transcribe_complete',
@@ -159,5 +164,61 @@ describe('useWhisperTranscriber', () => {
     expect(result.current.isTranscribing).toBe(false);
     expect(result.current.transcript).toBe('Dzisiejszy dzień był bardzo produktywny.');
     expect(onTranscriptMock).toHaveBeenCalledWith('Dzisiejszy dzień był bardzo produktywny.');
+    expect(result.current.error).toBeNull();
+  });
+
+  it('blocks transcript and flags error when harmful/terroristic speech is detected', async () => {
+    const onTranscriptMock = vi.fn();
+    const { result } = renderHook(() =>
+      useWhisperTranscriber({
+        onTranscript: onTranscriptMock,
+        workerFactory: () => mockWorker as unknown as Worker,
+        recorderFactory: () => mockRecorder as unknown as any,
+      })
+    );
+
+    await act(async () => {
+      await result.current.startRecording();
+      await result.current.stopRecording();
+    });
+
+    // Simulate worker returning terroristic attack plan
+    act(() => {
+      mockWorker.emitMessage({
+        type: 'transcribe_complete',
+        transcript: 'Planuję atak terrorystyczny i ładunek wybuchowy.',
+      });
+    });
+
+    expect(result.current.isTranscribing).toBe(false);
+    expect(result.current.transcript).toBe('');
+    expect(onTranscriptMock).not.toHaveBeenCalled();
+    expect(result.current.error).toMatch(/bezpieczeństwa|przemoc|terroryzm/i);
+  });
+
+  it('updates elapsedSeconds and auto-stops on max duration reached', async () => {
+    const { result } = renderHook(() =>
+      useWhisperTranscriber({
+        workerFactory: () => mockWorker as unknown as Worker,
+        recorderFactory: () => mockRecorder as unknown as any,
+      })
+    );
+
+    await act(async () => {
+      await result.current.startRecording();
+    });
+
+    // Simulate duration tick
+    act(() => {
+      mockRecorder.onDurationUpdate?.(15);
+    });
+    expect(result.current.elapsedSeconds).toBe(15);
+
+    // Simulate max duration trigger
+    await act(async () => {
+      mockRecorder.onMaxDurationReached?.();
+    });
+
+    expect(mockRecorder.stop).toHaveBeenCalled();
   });
 });

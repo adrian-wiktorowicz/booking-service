@@ -135,7 +135,7 @@ describe('VoiceJournalButton', () => {
     expect(screen.getByText(/wpisz treść ręcznie/i)).toBeInTheDocument();
   });
 
-  it('displays active recording timer showing 00:00 / 02:00 and 12-bar wave visualizer', async () => {
+  it('displays active recording timer showing 00:00 / 05:00 and 12-bar wave visualizer', async () => {
     vi.useFakeTimers();
     try {
       render(
@@ -151,8 +151,8 @@ describe('VoiceJournalButton', () => {
         fireEvent.click(button);
       });
 
-      // Check timer initial display
-      expect(screen.getByText(/00:00 \/ 02:00/)).toBeInTheDocument();
+      // Check timer initial display (5 minutes ceiling)
+      expect(screen.getByText(/00:00 \/ 05:00/)).toBeInTheDocument();
 
       // Check 12-bar visualizer is rendered
       const visualizer = screen.getByTestId('audio-wave-visualizer');
@@ -164,14 +164,41 @@ describe('VoiceJournalButton', () => {
         vi.advanceTimersByTime(5000);
       });
 
-      expect(screen.getByText(/00:05 \/ 02:00/)).toBeInTheDocument();
+      expect(screen.getByText(/00:05 \/ 05:00/)).toBeInTheDocument();
       expect(mockRecorder.analyser.getByteFrequencyData).toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('automatically stops recording when reaching 2-minute limit (120 seconds)', async () => {
+  it('displays warning badge when nearing 5-minute cap (e.g. 4:35)', async () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <VoiceJournalButton
+          workerFactory={() => mockWorker as unknown as Worker}
+          recorderFactory={() => mockRecorder as unknown as any}
+        />
+      );
+
+      const button = screen.getByRole('button', { name: /dyktafon|nagrywaj|mikrofon/i });
+
+      await act(async () => {
+        fireEvent.click(button);
+      });
+
+      // Fast-forward 275 seconds (4m 35s)
+      act(() => {
+        vi.advanceTimersByTime(275000);
+      });
+
+      expect(screen.getByText(/Pozostało 25s/i)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('automatically stops recording when reaching 5-minute limit (300 seconds)', async () => {
     vi.useFakeTimers();
     try {
       render(
@@ -189,9 +216,9 @@ describe('VoiceJournalButton', () => {
 
       expect(mockRecorder.start).toHaveBeenCalled();
 
-      // Fast-forward 120 seconds
+      // Fast-forward 300 seconds (5 minutes)
       await act(async () => {
-        vi.advanceTimersByTime(120000);
+        vi.advanceTimersByTime(300000);
       });
 
       expect(mockRecorder.stop).toHaveBeenCalled();

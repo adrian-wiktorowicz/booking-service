@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resampleTo16kMono, mergeAudioChunks } from './audioResampler';
+import { resampleTo16kMono, mergeAudioChunks, downmixToMono } from './audioResampler';
 
 describe('audioResampler', () => {
   it('returns exact same data if already 16000 Hz', () => {
@@ -24,6 +24,31 @@ describe('audioResampler', () => {
     expect(output.length).toBe(16000);
     expect(output[0]).toBeCloseTo(0.5, 4);
     expect(output[7999]).toBeCloseTo(0.5, 4);
+  });
+
+  it('correctly upsamples 8000 Hz (Bluetooth SCO) to 16000 Hz', () => {
+    const input = new Float32Array([0.2, 0.8]);
+    const output = resampleTo16kMono(input, 8000);
+    expect(output.length).toBe(4);
+    expect(output[0]).toBeCloseTo(0.2, 4);
+  });
+
+  it('correctly downsamples 96000 Hz (high-end USB) to 16000 Hz', () => {
+    const input = new Float32Array(96000);
+    input.fill(0.75);
+    const output = resampleTo16kMono(input, 96000);
+    expect(output.length).toBe(16000);
+    expect(output[0]).toBeCloseTo(0.75, 4);
+  });
+
+  it('downmixes stereo channels to mono by averaging', () => {
+    const left = new Float32Array([0.4, -0.2, 1.0]);
+    const right = new Float32Array([0.6, 0.2, 0.0]);
+    const mono = downmixToMono([left, right]);
+    expect(mono.length).toBe(3);
+    expect(mono[0]).toBeCloseTo(0.5, 4);
+    expect(mono[1]).toBeCloseTo(0.0, 4);
+    expect(mono[2]).toBeCloseTo(0.5, 4);
   });
 
   it('handles empty input gracefully', () => {

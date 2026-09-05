@@ -16,6 +16,7 @@ describe('AudioRecorder', () => {
   let mockAudioContext: any;
 
   beforeEach(() => {
+    vi.useFakeTimers();
     mockTracks = [{ stop: vi.fn(), onended: null as any }];
     mockStream = {
       getTracks: () => mockTracks,
@@ -60,6 +61,7 @@ describe('AudioRecorder', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -141,13 +143,35 @@ describe('AudioRecorder', () => {
       });
     }
 
-    // Simulate track interruption (e.g. phone call)
     expect(mockTracks[0].onended).toBeDefined();
     mockTracks[0].onended();
     expect(handleTrackEnded).toHaveBeenCalledTimes(1);
 
-    // Stop and ensure audio chunks are preserved
     const audioData = await recorder.stop();
     expect(audioData.length).toBeGreaterThan(0);
+  });
+
+  it('tracks elapsed time and enforces 5-minute (300s) maximum duration limit', async () => {
+    const recorder = new AudioRecorder();
+    const durationUpdates: number[] = [];
+    recorder.onDurationUpdate = (sec) => durationUpdates.push(sec);
+    const handleMaxDuration = vi.fn();
+    recorder.onMaxDurationReached = handleMaxDuration;
+
+    await recorder.start();
+    expect(recorder.elapsedSeconds).toBe(0);
+
+    // Advance by 10 seconds
+    vi.advanceTimersByTime(10000);
+    expect(durationUpdates.length).toBeGreaterThan(0);
+    expect(recorder.elapsedSeconds).toBe(10);
+
+    // Advance up to 300 seconds (5 minutes)
+    vi.advanceTimersByTime(290000);
+    expect(recorder.elapsedSeconds).toBe(300);
+    expect(handleMaxDuration).toHaveBeenCalled();
+
+    await recorder.stop();
+    expect(recorder.elapsedSeconds).toBe(0);
   });
 });

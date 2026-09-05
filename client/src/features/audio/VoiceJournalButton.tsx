@@ -7,6 +7,9 @@ export interface VoiceJournalButtonProps extends WhisperTranscriberOptions {
   className?: string;
 }
 
+const MAX_RECORDING_SECONDS = 300; // 5 minutes cap
+const WARNING_THRESHOLD_SECONDS = 270; // 4 minutes 30 seconds
+
 export const VoiceJournalButton: React.FC<VoiceJournalButtonProps> = ({
   onTranscript,
   onDictate,
@@ -31,6 +34,7 @@ export const VoiceJournalButton: React.FC<VoiceJournalButtonProps> = ({
     isRecording,
     isTranscribing,
     error,
+    isInterrupted,
     startRecording,
     stopRecording,
     getAnalyser,
@@ -49,7 +53,7 @@ export const VoiceJournalButton: React.FC<VoiceJournalButtonProps> = ({
     }
     const timerId = setInterval(() => {
       setSecondsElapsed((prev) => {
-        if (prev >= 120) return 120;
+        if (prev >= MAX_RECORDING_SECONDS) return MAX_RECORDING_SECONDS;
         return prev + 1;
       });
     }, 1000);
@@ -57,7 +61,7 @@ export const VoiceJournalButton: React.FC<VoiceJournalButtonProps> = ({
   }, [isRecording]);
 
   useEffect(() => {
-    if (isRecording && secondsElapsed >= 120) {
+    if (isRecording && secondsElapsed >= MAX_RECORDING_SECONDS) {
       void stopRecording();
     }
   }, [isRecording, secondsElapsed, stopRecording]);
@@ -99,8 +103,10 @@ export const VoiceJournalButton: React.FC<VoiceJournalButtonProps> = ({
   const formatTime = (secs: number) => {
     const m = String(Math.floor(secs / 60)).padStart(2, '0');
     const s = String(secs % 60).padStart(2, '0');
-    return `${m}:${s} / 02:00`;
+    return `${m}:${s} / 05:00`;
   };
+
+  const isNearLimit = secondsElapsed >= WARNING_THRESHOLD_SECONDS;
 
   const handleClick = async () => {
     if (isRecording) {
@@ -186,7 +192,13 @@ export const VoiceJournalButton: React.FC<VoiceJournalButtonProps> = ({
         </button>
 
         {isRecording && (
-          <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#fdf2f0] border border-[#f5c6cb]">
+          <div
+            className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-lg border ${
+              isNearLimit
+                ? 'bg-amber-500/10 border-amber-500/50 text-amber-600 dark:text-amber-400'
+                : 'bg-[#fdf2f0] border-[#f5c6cb] text-[#8c2a1c]'
+            }`}
+          >
             <div
               data-testid="audio-wave-visualizer"
               className="flex items-center gap-0.5 h-4 px-0.5"
@@ -195,14 +207,21 @@ export const VoiceJournalButton: React.FC<VoiceJournalButtonProps> = ({
               {bars.map((height, i) => (
                 <span
                   key={i}
-                  className="w-1 bg-[#8c2a1c] rounded-full transition-all duration-75"
+                  className={`w-1 rounded-full transition-all duration-75 ${
+                    isNearLimit ? 'bg-amber-600' : 'bg-[#8c2a1c]'
+                  }`}
                   style={{ height: `${height}%` }}
                 />
               ))}
             </div>
-            <span className="text-xs font-mono font-medium text-[#8c2a1c]">
+            <span className="text-xs font-mono font-medium">
               {formatTime(secondsElapsed)}
             </span>
+            {isNearLimit && (
+              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                (Pozostało {MAX_RECORDING_SECONDS - secondsElapsed}s)
+              </span>
+            )}
           </div>
         )}
 
@@ -213,6 +232,15 @@ export const VoiceJournalButton: React.FC<VoiceJournalButtonProps> = ({
           </div>
         )}
       </div>
+
+      {isInterrupted && (
+        <div
+          role="status"
+          className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5 mt-1"
+        >
+          Nagrywanie zostało przerwane (np. połączenie przychodzące). Zapisano dotychczasowe audio.
+        </div>
+      )}
 
       {error && (
         <div

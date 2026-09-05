@@ -62,24 +62,24 @@ export const VoiceJournalButton: React.FC<VoiceJournalButtonProps> = ({
           }
           className={`inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg border transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
             isRecording
-              ? 'bg-rose-600/20 text-rose-400 border-rose-500/50 animate-pulse ring-2 ring-rose-500/30'
+              ? 'bg-[#8c2a1c] text-[#faf9f6] border-[#8c2a1c] animate-pulse ring-2 ring-[#8c2a1c]/30'
               : isTranscribing
-              ? 'bg-amber-600/20 text-amber-400 border-amber-500/40'
-              : 'bg-sky-600/20 text-sky-400 hover:bg-sky-600/30 border-sky-500/30'
+              ? 'bg-[#3b2314] text-[#faf9f6] border-[#3b2314]'
+              : 'bg-[#faf9f6] text-[#4a3525] hover:bg-[#f0ede6] hover:text-[#171513] border-[#ded8ce]'
           }`}
         >
           {isRecording ? (
             <>
               <span className="relative flex h-2.5 w-2.5">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-500" />
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75" />
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#faf9f6]" />
               </span>
               <span>Zatrzymaj nagrywanie</span>
             </>
           ) : isTranscribing ? (
             <>
               <svg
-                className="animate-spin -ml-0.5 mr-1 h-3.5 w-3.5 text-amber-400"
+                className="animate-spin -ml-0.5 mr-1 h-3.5 w-3.5 text-[#faf9f6]"
                 xmlns="http://www.w3.org/2000/svg"
                 fill="none"
                 viewBox="0 0 24 24"
@@ -122,8 +122,8 @@ export const VoiceJournalButton: React.FC<VoiceJournalButtonProps> = ({
         </button>
 
         {isModelLoading && (
-          <div className="inline-flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-sky-300 bg-sky-950/60 border border-sky-800/60 rounded-md">
-            <span className="animate-spin inline-block h-2.5 w-2.5 border-2 border-sky-400 border-t-transparent rounded-full" />
+          <div className="inline-flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-[#4a3525] bg-[#faf9f6] border border-[#ded8ce] rounded-md">
+            <span className="animate-spin inline-block h-2.5 w-2.5 border-2 border-[#3b2314] border-t-transparent rounded-full" />
             <span>Pobieranie modelu Whisper: {loadingProgress}%</span>
           </div>
         )}
@@ -132,10 +132,10 @@ export const VoiceJournalButton: React.FC<VoiceJournalButtonProps> = ({
       {error && (
         <div
           role="alert"
-          className="text-[11px] text-rose-400 bg-rose-950/40 border border-rose-800/50 rounded-md px-2.5 py-1.5 mt-1"
+          className="text-[11px] text-[#8c2a1c] bg-[#fdf2f0] border border-[#f5c6cb] rounded-md px-2.5 py-1.5 mt-1"
         >
           <p className="font-semibold">{error}</p>
-          <p className="text-slate-400 mt-0.5">Fallback: Wpisz treść ręcznie w polu notatki.</p>
+          <p className="text-[#70685f] mt-0.5">Fallback: Wpisz treść ręcznie w polu notatki.</p>
         </div>
       )}
     </div>

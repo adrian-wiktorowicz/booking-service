@@ -52,7 +52,7 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen min-h-[100dvh] bg-slate-900 text-slate-100 flex flex-col pt-safe pb-safe pl-safe pr-safe">
+    <div className="min-h-screen min-h-[100dvh] bg-[#f8f7f4] text-[#171513] flex flex-col pt-safe pb-safe pl-safe pr-safe">
       <main className="flex-1 flex flex-col justify-center">
         {currentPath === '/register' && (
           <RegisterView

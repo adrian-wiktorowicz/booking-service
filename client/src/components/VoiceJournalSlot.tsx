@@ -24,7 +24,7 @@ export const VoiceJournalSlot: React.FC<VoiceJournalSlotProps> = ({
           disabled={disabled}
           aria-label="Włącz dyktafon AI"
           onClick={() => onDictate?.('')}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-sky-600/20 text-sky-400 hover:bg-sky-600/30 border border-sky-500/30 transition disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-[#faf9f6] text-[#4a3525] hover:bg-[#f0ede6] hover:text-[#171513] border border-[#ded8ce] transition disabled:opacity-50 cursor-pointer"
         >
           <svg
             className="w-4 h-4"

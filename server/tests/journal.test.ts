@@ -81,6 +81,13 @@ export class InMemoryJournalRepository implements IJournalRepository {
       .map((e) => ({ ...e }));
     return { entries, total };
   }
+
+  async deleteByDate(userId: string, entryDate: string): Promise<boolean> {
+    const idx = this.entries.findIndex((e) => e.userId === userId && e.entryDate === entryDate);
+    if (idx === -1) return false;
+    this.entries.splice(idx, 1);
+    return true;
+  }
 }
 
 const mockAuthService: IAuthService = {
@@ -1311,6 +1318,204 @@ describe('Story 2.2: GET /api/journal/entries Route Integration Tests', () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/journal/entries',
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required',
+      },
+    });
+
+    await app.close();
+  });
+});
+
+describe('Story 2.3: Delete Journal Entry (Unit & Integration)', () => {
+  let journalRepo: InMemoryJournalRepository;
+  let journalService: JournalService;
+  let validToken: string;
+
+  beforeEach(() => {
+    journalRepo = new InMemoryJournalRepository();
+    journalService = new JournalService(journalRepo);
+    validToken = signJwt({ userId: 'user-123' }, JWT_SECRET, 86400);
+  });
+
+  it('deletes existing entry successfully in service', async () => {
+    await journalRepo.upsert('user-123', '2026-09-03', {
+      notes: 'To be deleted',
+      mood: 'good',
+      tags: ['test'],
+    });
+
+    const res = await journalService.deleteEntry('user-123', '2026-09-03');
+    expect(res).toEqual({ status: 'deleted' });
+
+    const found = await journalRepo.findByDate('user-123', '2026-09-03');
+    expect(found).toBeNull();
+  });
+
+  it('throws EntryNotFoundError when deleting non-existent date', async () => {
+    await expect(journalService.deleteEntry('user-123', '2026-09-03')).rejects.toThrow(
+      EntryNotFoundError
+    );
+  });
+
+  it('throws EntryNotFoundError when attempting IDOR delete', async () => {
+    await journalRepo.upsert('user-456', '2026-09-03', {
+      notes: 'Other user',
+      mood: 'neutral',
+      tags: [],
+    });
+
+    await expect(journalService.deleteEntry('user-123', '2026-09-03')).rejects.toThrow(
+      EntryNotFoundError
+    );
+    const stillExists = await journalRepo.findByDate('user-456', '2026-09-03');
+    expect(stillExists).not.toBeNull();
+  });
+
+  it('throws InvalidDateError when date parameter is invalid', async () => {
+    await expect(journalService.deleteEntry('user-123', '2026-02-30')).rejects.toThrow(
+      InvalidDateError
+    );
+  });
+
+  it('HTTP DELETE /api/journal/entries/:date deletes entry successfully (200)', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    await journalRepo.upsert('user-123', '2026-09-03', {
+      notes: 'Goodbye entry',
+      mood: 'good',
+      tags: ['bye'],
+    });
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/journal/entries/2026-09-03',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ status: 'deleted' });
+
+    const checkGet = await app.inject({
+      method: 'GET',
+      url: '/api/journal/entries/2026-09-03',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+    expect(checkGet.statusCode).toBe(404);
+
+    await app.close();
+  });
+
+  it('HTTP DELETE /api/journal/entries/:date returns 404 for non-existent entry', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/journal/entries/2026-09-03',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'ENTRY_NOT_FOUND',
+        message: 'No entry found for this date',
+      },
+    });
+
+    await app.close();
+  });
+
+  it('HTTP DELETE /api/journal/entries/:date returns 404 on IDOR attempt and leaves entry intact', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    await journalRepo.upsert('user-456', '2026-09-03', {
+      notes: 'User 456 secret',
+      mood: 'bad',
+      tags: [],
+    });
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/journal/entries/2026-09-03',
+      headers: { authorization: `Bearer ${validToken}` }, // token is user-123
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'ENTRY_NOT_FOUND',
+        message: 'No entry found for this date',
+      },
+    });
+
+    const entryStillThere = await journalRepo.findByDate('user-456', '2026-09-03');
+    expect(entryStillThere).not.toBeNull();
+
+    await app.close();
+  });
+
+  it('HTTP DELETE /api/journal/entries/:date returns 422 for invalid date', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/journal/entries/2026-02-30',
+      headers: { authorization: `Bearer ${validToken}` },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'INVALID_DATE',
+        message: 'Invalid calendar date',
+      },
+    });
+
+    await app.close();
+  });
+
+  it('HTTP DELETE /api/journal/entries/:date returns 401 when unauthorized', async () => {
+    const app = await buildApp({
+      logger: false,
+      autoCloseDb: false,
+      authService: mockAuthService,
+      journalService,
+      jwtSecret: JWT_SECRET,
+    });
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/journal/entries/2026-09-03',
     });
 
     expect(res.statusCode).toBe(401);

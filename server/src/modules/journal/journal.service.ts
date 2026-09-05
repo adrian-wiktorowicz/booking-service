@@ -144,4 +144,17 @@ export class JournalService implements IJournalService {
       },
     };
   }
+
+  async deleteEntry(userId: string, dateStr: string): Promise<{ status: string }> {
+    if (!isValidCalendarDate(dateStr)) {
+      throw new InvalidDateError();
+    }
+
+    const deleted = await this.journalRepo.deleteByDate(userId, dateStr);
+    if (!deleted) {
+      throw new EntryNotFoundError();
+    }
+
+    return { status: 'deleted' };
+  }
 }

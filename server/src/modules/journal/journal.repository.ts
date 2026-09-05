@@ -81,4 +81,13 @@ export class DrizzleJournalRepository implements IJournalRepository {
       total: Number(totalResult[0]?.count ?? 0),
     };
   }
+
+  async deleteByDate(userId: string, entryDate: string): Promise<boolean> {
+    const deleted = await this.database
+      .delete(journalEntries)
+      .where(and(eq(journalEntries.userId, userId), eq(journalEntries.entryDate, entryDate)))
+      .returning({ id: journalEntries.id });
+
+    return deleted.length > 0;
+  }
 }

@@ -78,4 +78,27 @@ export const journalRoutes: FastifyPluginAsync<JournalRouteOptions> = async (fas
       return reply.send(result);
     }
   );
+
+  fastify.delete<{ Params: { date: string } }>(
+    '/entries/:date',
+    {
+      preHandler: [authenticate],
+      schema: {
+        params: {
+          type: 'object',
+          required: ['date'],
+          properties: {
+            date: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const result = await journalService.deleteEntry(
+        request.user.userId,
+        request.params.date
+      );
+      return reply.send(result);
+    }
+  );
 };

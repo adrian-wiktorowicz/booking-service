@@ -96,6 +96,7 @@ export interface IJournalRepository {
       endDate?: string;
     }
   ): Promise<{ entries: JournalEntryRecord[]; total: number }>;
+  deleteByDate(userId: string, entryDate: string): Promise<boolean>;
 }
 
 export interface IJournalService {
@@ -109,4 +110,5 @@ export interface IJournalService {
     userId: string,
     options?: JournalFilterOptions
   ): Promise<PaginatedJournalEntriesResponse>;
+  deleteEntry(userId: string, dateStr: string): Promise<{ status: string }>;
 }
